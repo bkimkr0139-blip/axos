@@ -40,6 +40,13 @@ curl -H "ngrok-skip-browser-warning:true" $DOM/bridge/health    # 브리지 → 
 ```
 Base44 화면 새로고침 → 콘솔에 `localhost:4100 ERR_CONNECTION_REFUSED` 사라지면 성공.
 
+## Base44 URL 규칙 (필수)
+- Base44(클라우드)는 **절대 localhost를 호출하면 안 됨**. 앱 상수만 사용:
+  - `BRIDGE_URL` = `https://hardware-finalize-faceted.ngrok-free.dev/bridge` (브리지 API)
+  - `N8N_URL` = `https://hardware-finalize-faceted.ngrok-free.dev` (MX-Flow 에디터 루트)
+- n8n 에디터는 상대경로 `/rest`를 사용 → 터널 루트로 부팅 정상(`/rest/settings` 200 확인). `${N8N_URL}/workflow/<id>` 딥링크는 서버 404지만 SPA 부팅됨(보조 링크로 사용).
+- **AI 어시스트 생성물 확인**: n8n 에디터 의존 최소화 위해, 생성/수정 후 `${BRIDGE_URL}/workflow?id=<new_id>`로 **앱 내 플로우 다이어그램**을 1차 표시(에디터 링크는 보조). 생성물은 비활성·`[AI]` 접두.
+
 ## 핵심 주의
 - **ngrok 경고 우회**: Base44 fetch는 모든 브리지 요청에 헤더 `ngrok-skip-browser-warning: true` 필수. 이 헤더는 CORS 프리플라이트를 유발 → 브리지 CORS `Access-Control-Allow-Headers`에 `ngrok-skip-browser-warning` 포함됨(bridge_server.cjs).
 - **ngrok free 단일 터널**: n8n과 브리지를 동시에 노출하려면 프록시 1개로 합쳐야 함(그래서 방법 B). ngrok은 5678이 아니라 **5000(프록시)** 를 가리킴.
