@@ -186,8 +186,22 @@ function fetchWorkflowFlow(id) {
       let b = ''; res.on('data', (c) => b += c); res.on('end', () => {
         if (res.statusCode >= 300) return resolve({ ok: false, error: 'n8n ' + res.statusCode });
         let w; try { w = JSON.parse(b); } catch (_) { return resolve({ ok: false, error: 'parse' }); }
+        const nodeDetail = (n) => {
+          const t = String(n.type || '').replace('n8n-nodes-base.', '');
+          const p = n.parameters || {};
+          try {
+            if (t.endsWith('webhook')) return 'path: ' + (p.path || '') + (p.httpMethod ? ' [' + p.httpMethod + ']' : '');
+            if (t === 'code') { const l = String(p.jsCode || '').split('\n').find((x) => x.trim() && !x.trim().startsWith('//')); return (l || 'code').trim().slice(0, 80); }
+            if (t === 'httpRequest') return (p.method || 'GET') + ' ' + String(p.url || '').slice(0, 80);
+            if (t === 'respondToWebhook') return 'respond: ' + (p.respondWith || 'json');
+            if (t === 'set') return (Array.isArray((p.assignments || {}).assignments) ? p.assignments.assignments.length : Object.keys(p.values || {}).length) + ' fields';
+            if (t.endsWith('scheduleTrigger') || t === 'cron') return 'schedule';
+          } catch (_) {}
+          return t;
+        };
         const nodes = (w.nodes || []).map((n) => ({ name: n.name,
-          type: String(n.type || '').replace('n8n-nodes-base.', ''), position: n.position || [0, 0] }));
+          type: String(n.type || '').replace('n8n-nodes-base.', ''), position: n.position || [0, 0],
+          detail: nodeDetail(n) }));
         // connections → edges [{from,to}]
         const edges = [];
         const conns = w.connections || {};
