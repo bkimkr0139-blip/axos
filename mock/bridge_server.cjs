@@ -327,7 +327,7 @@ async function reject(decision_id, approver, reason) {
 function readBody(req) { return new Promise((resolve) => { let b = ''; req.on('data', (c) => b += c);
   req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch (_) { resolve({}); } }); }); }
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization' };
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, ngrok-skip-browser-warning' };
 function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', ...CORS }); res.end(JSON.stringify(obj, null, 2)); }
 
 const server = http.createServer(async (req, res) => {

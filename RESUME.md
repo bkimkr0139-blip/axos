@@ -45,6 +45,7 @@ powershell -ExecutionPolicy Bypass -File C:\Users\User\works\base44\axos\scripts
 - ✅ **거버넌스 하드닝**(2026-06-05, docs/06 §3): `mock/governance.cjs` + 브리지 게이트 강제 — 한도(거부)·신뢰도임계(승급)·만료·RBAC/SoD·이중승인(2인)·킬스위치(/kill·/unkill)·보상(/compensate)·운영지표(/metrics). 검증: `scripts/test_governance.cjs`(단위 15/15), `scripts/smoke_governance.ps1`(e2e: RBAC 거부→실행, 이중승인 PO 17,640,000원, 킬스위치 차단, 보상 취소, metrics).
 - ✅ **Base44 거버넌스/운영 패널**(MCP): 운영 대시보드 실시간 `/metrics` 연결(자동화율·성공률·ROI·agent별, 오프라인 배지) + "거버넌스 제어" 화면(킬스위치 토글·이중승인 진행률·보상 실행). 브리지 엔드포인트 CORS 검증 완료(브라우저 fetch).
 - ✅ **엔진 강점 노출**(2026-06-05): `mock/engines.cjs` + 브리지 `/workflows`(n8n: 01~10 카탈로그·결정→워크플로우 라우팅·실시간 헬스)·`/catalog`(Databricks: 메달리온 5계층·계보 4·judge 모드·Vector 4종)·`/predictions`(Mosaic AI: 수요/매출/이직/불량/비용). Base44 화면 2종(자동화 워크플로우 n8n / 데이터 레이크하우스 Databricks) MCP 구축.
+- ✅ **외부화**(2026-06-05, docs/09): Base44 클라우드→로컬 브리지 `ERR_CONNECTION_REFUSED` 해결. 방법 B(cloudflared는 이 환경 엣지 404). `mock/reverse_proxy.cjs`(:5000, /bridge/*→4100·그 외→5678) + ngrok 예약도메인 타깃 5678→5000 재지정. 브리지 외부=`https://hardware-finalize-faceted.ngrok-free.dev/bridge`. 브리지 CORS에 `ngrok-skip-browser-warning` 허용 추가. Base44 BRIDGE_URL 교체+헤더 적용. 외부 /webhook/health·/bridge/health·CORS 프리플라이트 200 검증.
 
 ## 4. 다음 작업 (TODO — 자격증명 의존, 코드는 드롭인 준비완료)
 - [ ] **Databricks live**(핵심 잔여): 워크스페이스/PAT 확보 시 `adapters/databricks_judge.cjs`로 judge 교체(PIPELINE_MODE=live), audit/memory를 Delta·Vector로. 계약 불변. DatabricksConfig 엔티티에 값 주입.
