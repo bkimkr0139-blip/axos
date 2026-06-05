@@ -40,13 +40,16 @@ powershell -ExecutionPolicy Bypass -File C:\Users\User\works\base44\axos\scripts
 - ✅ **STEP9 Agent Memory(mock)**: `memory/memory_mock.cjs`(4종 인덱스 jsonl, remember/retrieve) + `memory/memory.schema.json`. 브리지 실행완료→task_memory 적재(자가향상 루프), judge가 retrieve 회수. `/memory` 엔드포인트.
 - ✅ **STEP5 Copilot + STEP6 Agent 콘솔 화면**(Base44 MCP): 자연어 질의→/insight, 6 Agent 트리거→DecisionEnvelope 표시.
 - ✅ **STEP10 운영 대시보드 + STEP3 데이터소스 + STEP2 Databricks 화면**(Base44 MCP): KPI/ROI/차트, DataSource 9종·DatabricksConfig 5종 시드.
+- ✅ **end-to-end 실증**(2026-06-05, n8n :5678 UP): 자동실행 sales/hr/quality/copilot 전부 succeeded, 승인루프 SCM held→approve→ERP PO(PO-99BF3E8D, 5,335,000원)+notify delivered+카드 completed. 감사 decided→held→approved→executed, task_memory 누적.
+- ✅ **GitHub push**(커밋 6c38451): origin main. 런타임 jsonl(audit/memory)는 .gitignore.
 
-## 4. 다음 작업 (TODO, 우선순위)
-- [ ] **Databricks live**(핵심 잔여): 자격증명 확보 시 `adapters/databricks_judge.cjs`로 judge 교체(PIPELINE_MODE=live), audit/memory를 Delta·Vector로. 계약 불변. DatabricksConfig 엔티티에 값 주입.
-- [ ] **승인 카드 live 호출**: `BASE44_TOKEN` 주입 시 실 REST 카드 생성. 클라우드 빌더↔localhost는 터널 필요(SECL 패턴).
-- [ ] **n8n 가동 의존**: 자동실행(send_alert/report/route_llm) 완결은 n8n :5678 active 필요. 다운 시 판단·게이트는 정상, 실행만 failed.
+## 4. 다음 작업 (TODO — 자격증명 의존, 코드는 드롭인 준비완료)
+- [ ] **Databricks live**(핵심 잔여): 워크스페이스/PAT 확보 시 `adapters/databricks_judge.cjs`로 judge 교체(PIPELINE_MODE=live), audit/memory를 Delta·Vector로. 계약 불변. DatabricksConfig 엔티티에 값 주입.
+- [ ] **승인 카드 live REST**: `BASE44_TOKEN` 주입 시 브리지가 실 WorkflowRequest 생성. 클라우드 빌더↔localhost는 터널 필요(SECL 패턴).
 - [ ] **운영토큰**: n8n `N8N_WEBHOOK_TOKEN`·브리지 토큰 강한 값으로 (현 dev 폴백, 로컬 전용)
-- [ ] **GitHub push**: 신규 axos repo 원격 생성·push (gh auth 확인)
+
+## n8n 기동 메모 (실행 검증 전제)
+native n8n v2.20.11. 다운 시: `$env:N8N_BLOCK_ENV_ACCESS_IN_NODE='false'` 후 `C:\Users\User\AppData\Local\npm-cache\_npx\a8a7eec953f1f314\node_modules\.bin\n8n.cmd start` (자세히 ../n8n-pipeline/RESUME §2). ⚠️ `node` 전체 종료 금지 — n8n·MCP까지 끊김. 5678 리스너만 정확히 종료.
 
 ## 5. 함정
 - `.js`는 상위 package.json(type:module) 때문에 ESM 오류 → Node 단독 실행은 `.cjs`.
