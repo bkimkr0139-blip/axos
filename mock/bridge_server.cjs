@@ -30,6 +30,8 @@ const hrAgent = require('../agents/hr_agent.cjs');
 const qualityAgent = require('../agents/quality_agent.cjs');
 const memory = require('../memory/memory_mock.cjs');
 const gov = require('./governance.cjs');
+const engines = require('./engines.cjs');
+const dbxJudge = require('../adapters/databricks_judge.cjs');
 const erp = require('../adapters/erp_mock.cjs');
 const base44Card = require('../adapters/base44_card.cjs');
 
@@ -145,6 +147,17 @@ async function callN8n(workflow, payload) {
   const url = CFG.n8nBase + '/webhook/' + workflow;
   const body = { ...payload, callback_url: CFG.callbackUrl };
   return postJson(url, { Authorization: 'Bearer ' + CFG.n8nToken }, body);
+}
+// n8n 실행 레이어 헬스 (워크플로우 화면용)
+function getN8nHealth() {
+  return new Promise((resolve) => {
+    let u; try { u = new URL(CFG.n8nBase + '/webhook/health'); } catch (e) { return resolve({ ok: false }); }
+    const r = http.get({ hostname: u.hostname, port: u.port || 80, path: u.pathname, timeout: 3000 }, (res) => {
+      let b = ''; res.on('data', (c) => b += c); res.on('end', () => { let j = null; try { j = JSON.parse(b); } catch (_) {}
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, body: j }); });
+    });
+    r.on('error', () => resolve({ ok: false })); r.on('timeout', () => { r.destroy(); resolve({ ok: false }); });
+  });
 }
 
 async function execute(env, dryRun) {
@@ -407,7 +420,27 @@ const server = http.createServer(async (req, res) => {
         memory: memory.stats() });
     }
 
-    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory'] });
+    // n8n 실행 레이어 노출 — 워크플로우 카탈로그 + 라우팅 + 실시간 헬스
+    if (req.method === 'GET' && u.pathname === '/workflows') {
+      const h = await getN8nHealth();
+      return send(res, 200, { engine: 'n8n', base: CFG.n8nBase,
+        online: h.ok, health: h.body || null,
+        count: engines.WORKFLOWS.length, workflows: engines.WORKFLOWS, routing: engines.DECISION_ROUTING });
+    }
+
+    // Databricks 판단 레이어 노출 — 메달리온 카탈로그 + 계보 + judge 모드
+    if (req.method === 'GET' && u.pathname === '/catalog')
+      return send(res, 200, { engine: 'databricks',
+        judge_mode: dbxJudge.isConfigured() ? 'live' : 'mock',
+        vector_search: memory.INDEXES, memory_stats: memory.stats(),
+        ...engines.CATALOG });
+
+    // Mosaic AI 예측 노출 (수요/매출/이직/불량/비용)
+    if (req.method === 'GET' && u.pathname === '/predictions')
+      return send(res, 200, { engine: 'databricks:mosaic_ai', ts: now(),
+        predictions: engines.predictions({ scm: scmAgent, sales: salesAgent, hr: hrAgent, quality: qualityAgent, finance: financeAgent, procurement: procurementAgent }) });
+
+    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /catalog', 'GET /predictions'] });
   } catch (e) { send(res, 500, { ok: false, error: e.message }); }
 });
 

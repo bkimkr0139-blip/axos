@@ -34,6 +34,11 @@ Show '8) /agents (registry alias inventory->scm, purchasing->procurement)' (Invo
 Show '9) /memory (task_memory should accumulate from auto-exec)'           (Invoke-RestMethod "$bridge/memory")
 Show '10) /audit tail'                                                       (Invoke-RestMethod "$bridge/audit?n=12")
 
+# Engine exposure (n8n strengths + Databricks advantages surfaced as data)
+Show '11) /workflows (n8n: 01-10 catalog + decision routing + live health)' (Invoke-RestMethod "$bridge/workflows")
+Show '12) /catalog (Databricks: medallion + lineage + judge mode)'          (Invoke-RestMethod "$bridge/catalog")
+Show '13) /predictions (Mosaic AI: demand/revenue/attrition/defect/cost)'   (Invoke-RestMethod "$bridge/predictions")
+
 Write-Host ''; Write-Host 'AGENT SWEEP DONE.' -ForegroundColor Green
 Write-Host 'Expect: 1-2 held(create_po), 3-7 auto(send_alert/generate_report/route_llm), 8 registry=6/intents=12, 9 task_memory>0'
 Write-Host 'Note: auto-exec status=failed if n8n :5678 is down (judgment/gate still verified).'
