@@ -8,3 +8,9 @@ memory/*.jsonl
 *.token
 secrets.*
 node_modules/
+# Python (axos-bridge)
+.venv/
+__pycache__/
+*.pyc
+*.db
+.pytest_cache/
