@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AXOS Agent Memory (STEP9) — 4종 기억 레코드 계약",
+  "description": "Databricks Vector Search 인덱스 4종의 공통 레코드. mock은 jsonl, live는 vector upsert. 인터페이스 불변.",
+  "type": "object",
+  "properties": {
+    "mem_id": { "type": "string", "description": "기억 레코드 고유 ID" },
+    "index": { "type": "string", "enum": ["conversation_memory", "document_memory", "task_memory", "project_memory"] },
+    "ts": { "type": "string", "format": "date-time" },
+    "agent": { "type": "string", "description": "적재 주체 agent (task_memory)" },
+    "decision": { "type": "string", "description": "결정 종류 (task_memory)" },
+    "summary": { "type": "string", "description": "사람이 읽는 요약/내용" },
+    "confidence": { "type": "number" },
+    "status": { "type": "string", "description": "실행 결과 (task_memory)" },
+    "value": { "type": ["number", "null"], "description": "금액 등 정량 (task_memory)" },
+    "actor": { "type": "string", "description": "ai|user|approver" },
+    "text": { "type": "string", "description": "임베딩 대상 본문 (conversation/document)" },
+    "embedding_ref": { "type": "string", "description": "live: vector id. mock: 미사용" }
+  },
+  "required": ["mem_id", "index", "ts"],
+  "x-indexes": {
+    "conversation_memory": { "src": "02 rag-chat", "use": "맥락 유지·후속질의" },
+    "document_memory": { "src": "01 ingest, 09 reindex", "use": "근거 회수(evidence)" },
+    "task_memory": { "src": "브리지 감사 → 적재", "use": "유사상황 판단 개선(자가향상)" },
+    "project_memory": { "src": "06 wbs-delay-check", "use": "프로젝트 맥락 판단" }
+  }
+}

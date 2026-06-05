@@ -82,6 +82,15 @@ Databricst 판단 ──(Decision Envelope)──▶ [Bridge] ──(Action Requ
 
 승인 요청은 `08 notify` 또는 Base44 승인 카드로 발송. 승인 응답이 브리지로 돌아오면 ActionRequest 발행.
 
+### 3.1 Base44 승인 카드 연동 (구현됨, 2026-06-05)
+연결 키 = **`decision_id`**. 어댑터 `adapters/base44_card.cjs`.
+- **방향1 (브리지→Base44)**: held(approval_required) → `WorkflowRequest` 카드 생성(type=approval, status=pending). DecisionEnvelope→카드 필드 매핑(summary→title, amount→priority, approvers→assignee, decision_id를 description·comments에 임베드).
+- **방향2 (Base44→브리지)**: 승인 센터 화면의 승인/거부 버튼 → description에서 decision_id 추출 → `POST {BRIDGE_URL}/approve|/reject {decision_id, approver}`. (Base44 측은 MCP `edit_base44_app` 자연어 지시로 구축)
+- **방향3 (브리지→Base44)**: approve 실행 성공 → 카드 status=completed, reject → status=rejected (closeCard).
+- 토큰 모드: `BASE44_TOKEN` 미설정 시 mock(매핑만 반환), 설정 시 동일 코드로 실 REST 호출. 브라우저 fetch 위해 브리지에 CORS+OPTIONS 추가.
+- 검증: held→카드(mock)→/approve→ERP PO+notify+카드 closed 통과. 실제 앱에 카드 생성도 MCP로 검증(WorkflowRequest id=6a228f10307574a9f51fb540).
+- live 클라우드 주의: Base44(클라우드)→localhost 브리지는 동일 PC 브라우저면 가능(CORS 처리됨). 원격/클라우드 빌더에서 호출하려면 터널(cloudflared 등) 필요 — SECL 패턴 참조.
+
 ---
 
 ## 4. 실행 라우팅 — 결정 → n8n 워크플로우 매핑

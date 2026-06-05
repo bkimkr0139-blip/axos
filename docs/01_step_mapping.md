@@ -8,13 +8,13 @@
 
 ---
 
-## STEP 1 — Base44 앱 분석
+## STEP 1 — Base44 앱 분석 ✅
 | 항목 | 상태 | 비고 |
 |------|------|------|
-| 데이터 모델(Entities) 분석 | ⬜ | Base44 MCP 연결 후 (→ docs/07). 산출: 엔티티 인벤토리·ERD |
-| 화면 분석 | ⬜ | 화면→Agent/Copilot 진입점 매핑 |
-| API 분석 | ⬜ | Base44 내장 API·외부 호출(`N8N_BASE_URL`) 목록화 |
-**선행**: Base44 MCP 연결. **산출물**: `docs/step1_base44_inventory.md`(예정).
+| 데이터 모델(Entities) 분석 | ✅ | MCP 실측 6종(AIAgent·DataSource·DatabricksConfig·WorkflowRequest·Document·User). → `step1_base44_inventory.md` |
+| 화면 분석 | △ | 엔티티 기반 추론 7화면. 실측 보강은 Preview 확인 과제(MCP 페이지조회 미지원) |
+| API 분석 | ✅ | 런타임 규약 확정. 함수목록은 MCP 한계로 에디터 확인 |
+**선행**: Base44 MCP 연결(완료). **산출물**: `step1_base44_inventory.md` ✅ + `step1_databricks_mapping.md` ✅(엔티티→메달리온 매핑).
 
 ---
 
@@ -56,7 +56,9 @@
 
 ---
 
-## STEP 5 — AI Copilot
+## STEP 5 — AI Copilot  ✅(경험화면+실행부, 판단 mock)
+> Base44 "AI Copilot" 화면 구축(자연어 질의→브리지 /insight→결정·근거 표시, MCP). 차트/text2sql은 Databricks live 시 보강.
+
 | 기능 | 상태 | 연계 n8n / 컴포넌트 |
 |------|------|---------------------|
 | 자연어 질의 | ✅(실행부) | `02 rag-chat` |
@@ -69,7 +71,9 @@
 
 ---
 
-## STEP 6 — 6 Agent (전부 명시)
+## STEP 6 — 6 Agent (전부 명시)  ✅(판단 mock 전체 구현)
+> `agents/_base.cjs` 공통 골격 + 6 agent(.cjs) 전체 구현. 브리지 INTENT_ROUTE 12 인텐트, AGENT_REGISTRY alias. STEP8 예측은 각 reason()에 mock 내장. live: `adapters/databricks_judge.cjs` 드롭인.
+
 | Agent | 임무 | 상태 | 대표 시나리오 | 연계 |
 |-------|------|------|---------------|------|
 | **Sales Agent** | 영업 분석 | ⏳ | 파이프라인/실적 이상 → 알림·리포트 | 05,08 |
@@ -108,7 +112,9 @@
 
 ---
 
-## STEP 9 — Agent Memory (Databricks Vector Search, 4종 전부)
+## STEP 9 — Agent Memory (Databricks Vector Search, 4종 전부)  ✅(mock 구현)
+> `memory/memory_mock.cjs`(4종 jsonl remember/retrieve) + `memory/memory.schema.json`. 브리지 실행완료→task_memory 적재, judge가 retrieve 회수(자가향상 루프). live: Vector Search 인덱스로 드롭인.
+
 | 기억 | 상태 | 인덱스(설계) | 연계 n8n |
 |------|------|---------------|----------|
 | 대화 기억 | ⏳ | conversation_memory | 02 rag-chat |
@@ -119,7 +125,9 @@
 
 ---
 
-## STEP 10 — 운영 대시보드 (실시간, 지표 전부)
+## STEP 10 — 운영 대시보드 (실시간, 지표 전부)  ✅(경험화면 구축)
+> Base44 "운영 대시보드"(메인 홈) 구축: KPI 5종·Agent별 사용량·부서 분포·ROI 추정·최근활동(MCP). 실시간 지표 원천은 브리지 감사로그/`/memory`.
+
 | 지표 | 상태 | 출처 |
 |------|------|------|
 | Agent 사용량 | ⏳ | 브리지 감사로그 집계 |

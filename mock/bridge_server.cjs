@@ -23,7 +23,24 @@ const path = require('path');
 const crypto = require('crypto');
 
 const scmAgent = require('../agents/scm_agent.cjs');
+const salesAgent = require('../agents/sales_agent.cjs');
+const procurementAgent = require('../agents/procurement_agent.cjs');
+const financeAgent = require('../agents/finance_agent.cjs');
+const hrAgent = require('../agents/hr_agent.cjs');
+const qualityAgent = require('../agents/quality_agent.cjs');
+const memory = require('../memory/memory_mock.cjs');
 const erp = require('../adapters/erp_mock.cjs');
+const base44Card = require('../adapters/base44_card.cjs');
+
+// Agent 레지스트리 — Base44 AIAgent.type ↔ 판단 도메인 alias (계약 불변, docs/step1_databricks_mapping §3.1)
+const AGENT_REGISTRY = {
+  inventory: { domain: 'scm', label: '재고 Agent' },
+  purchasing: { domain: 'procurement', label: '구매 Agent' },
+  sales: { domain: 'sales', label: '영업 Agent' },
+  quality: { domain: 'quality', label: '품질 Agent' },
+  hr: { domain: 'hr', label: '인사 Agent' },
+  finance: { domain: 'finance', label: '재무 Agent' },
+};
 
 const CFG = {
   port: parseInt(process.env.BRIDGE_PORT || '4100', 10),
@@ -46,26 +63,45 @@ function audit(rec) {
 }
 
 // ───────────────────── 1) 판단 (Agent 라우팅) ─────────────────────
-// intent → agent. live: Databricks 추론으로 교체.
+// intent → agent.handle. live: Databricks 추론(adapters/databricks_judge)으로 교체.
 const INTENT_ROUTE = {
-  stock_risk: scmAgent.handle, reorder: scmAgent.handle, stock_check: scmAgent.handle,
+  // SCM(재고): 결품 예측
+  stock_risk: scmAgent.handle, stock_check: scmAgent.handle,
+  // Procurement(구매): 발주/공급사 선정
+  reorder: procurementAgent.handle, supplier_select: procurementAgent.handle,
+  // Sales(영업)
+  sales_risk: salesAgent.handle, sales_brief: salesAgent.handle,
+  // Finance(재무)
+  cost_anomaly: financeAgent.handle, budget_check: financeAgent.handle,
+  // HR(인사)
+  hr_insight: hrAgent.handle, attrition_risk: hrAgent.handle,
+  // Quality(품질)
+  quality_anomaly: qualityAgent.handle, defect_check: qualityAgent.handle,
 };
 function judge(req) {
   const agentFn = INTENT_ROUTE[req.intent];
-  if (agentFn) return agentFn(req);
-  return financeOrDefault(req); // 나머지 인텐트
+  if (agentFn) {
+    // Retrieve 보강: 업무기억(task_memory)에서 유사 상황 회수 → 판단 신뢰에 참고(mock)
+    const recall = memory.retrieve('task_memory', req.intent, 1);
+    const env = agentFn(req);
+    if (recall.length) env._memory_hint = recall[0];
+    return env;
+  }
+  return copilotDefault(req); // 미매칭/요약 인텐트
 }
-function financeOrDefault(req) {
+function copilotDefault(req) {
   const ctx = req.context || {};
-  const base = { decision_id: uid('dec'), confidence: 0.9, ts: now(),
+  const base = { decision_id: uid('dec'), confidence: 0.85, ts: now(),
     guardrails: { expires_at: new Date(Date.now() + 3600e3).toISOString() } };
   const project_id = ctx.project_id || 'PRJ-DEMO', user_id = ctx.user_id || 'U-DEMO';
-  if (req.intent === 'cost_anomaly') {
-    return { ...base, agent: 'finance', decision: 'send_alert', summary: '클라우드 비용 임계 초과 추세',
-      evidence: [{ kind: 'metric', ref: 'axos.gold.cost_daily', detail: 'mtd_vs_budget=+18%' }],
-      proposed_actions: [{ type: 'send_alert', target_system: 'n8n', dry_run_supported: true,
-        payload: { request_id: uid('req'), project_id, user_id, message: '[Finance] 클라우드 비용 예산 대비 +18% 초과 추세.', channel: ctx.channel || 'telegram' } }],
-      approval_policy: { level: 'auto', reason: '내부 경보' } };
+  // 문서요약/일반질의 → route_llm (n8n 07 llm-route)
+  if (req.intent === 'doc_summary' || req.intent === 'rag_answer') {
+    return { ...base, agent: 'copilot', decision: req.intent === 'doc_summary' ? 'route_llm' : 'rag_answer',
+      summary: 'Copilot: ' + (req.query || req.intent),
+      evidence: [{ kind: 'vector', ref: 'axos.memory.document_memory', detail: 'top-k 회수(mock)' }],
+      proposed_actions: [{ type: req.intent === 'doc_summary' ? 'route_llm' : 'rag_answer', target_system: 'n8n', dry_run_supported: true,
+        payload: { request_id: uid('req'), project_id, user_id, query: req.query || '', task: req.intent } }],
+      approval_policy: { level: 'auto', reason: '읽기/요약' } };
   }
   return { ...base, agent: 'copilot', decision: 'noop', confidence: 0,
     summary: 'unknown intent: ' + req.intent,
@@ -143,6 +179,10 @@ async function runExecute(env, dryRun, actor) {
   const eventByStatus = { succeeded: 'executed', skipped_dry_run: 'dry_run', compensated: 'compensated', failed: 'failed' };
   audit({ decision_id: env.decision_id, action_id: result.action_id, actor: actor || 'ai',
     event: eventByStatus[result.status] || 'failed', summary: env.summary });
+  // Remember: 결정→행동→결과를 업무기억에 적재 (자가향상 루프, docs/05 §3)
+  if (!dryRun) memory.remember('task_memory', { agent: env.agent, decision: env.decision,
+    summary: env.summary, confidence: env.confidence, status: result.status,
+    value: ((env.proposed_actions[0] || {}).payload || {}).amount, actor: actor || 'ai' });
   return result;
 }
 
@@ -168,12 +208,15 @@ async function runInsight(req, dryRun) {
     return { ok: false, reason: env.approval_policy.reason, trace }; }
 
   if (level !== 'auto' && !dryRun) {
-    held.set(env.decision_id, { env, req, ts: now() });
+    // 방향1: Base44에 승인 카드 생성 (decision_id로 연결). 토큰 없으면 mock 매핑 반환.
+    const card = await base44Card.createCard(env, req);
+    held.set(env.decision_id, { env, req, ts: now(), card_id: card.card_id });
     trace.steps.push({ step: 'gate', result: 'held_for_approval', level, reason: env.approval_policy.reason });
+    trace.steps.push({ step: 'base44_card', card_id: card.card_id, mock: !!card.mock });
     audit({ decision_id: env.decision_id, actor: 'bridge', event: 'held_for_approval', summary: env.summary,
-      value: (env.proposed_actions[0].payload || {}).amount });
-    return { ok: true, held: true, decision_id: env.decision_id, approval: env.approval_policy, trace,
-      note: 'POST /approve {decision_id} 로 승인 시 실행, /reject 로 폐기' };
+      value: (env.proposed_actions[0].payload || {}).amount, evidence_ref: card.card_id });
+    return { ok: true, held: true, decision_id: env.decision_id, approval: env.approval_policy,
+      base44_card: card, trace, note: 'Base44 승인 카드 생성. POST /approve {decision_id} 로 승인 시 실행, /reject 로 폐기' };
   }
 
   trace.steps.push({ step: 'gate', result: 'auto_pass' });
@@ -190,27 +233,39 @@ async function approve(decision_id, approver) {
   audit({ decision_id, actor: approver || 'user', event: 'approved', summary: h.env.summary });
   held.delete(decision_id);
   const result = await runExecute(h.env, false, approver || 'user');
-  return { ok: result.status === 'succeeded', approved_by: approver || 'user', result };
+  // 방향3: Base44 카드 닫기 (실행 성공이면 completed)
+  const card = await base44Card.closeCard(h.card_id,
+    result.status === 'succeeded' ? 'completed' : 'in_progress',
+    `브리지 승인 실행: ${result.status} (by ${approver || 'user'})`);
+  return { ok: result.status === 'succeeded', approved_by: approver || 'user', result, base44_card: card };
 }
-function reject(decision_id, approver, reason) {
+async function reject(decision_id, approver, reason) {
   const h = held.get(decision_id);
   if (!h) return { ok: false, reason: 'not_found_or_already_resolved', decision_id };
   audit({ decision_id, actor: approver || 'user', event: 'rejected_by_human', summary: reason || h.env.summary });
   held.delete(decision_id);
-  return { ok: true, rejected_by: approver || 'user', reason: reason || null, decision_id };
+  // 방향3: Base44 카드 닫기 (rejected)
+  const card = await base44Card.closeCard(h.card_id, 'rejected', `거부됨: ${reason || '(사유없음)'} (by ${approver || 'user'})`);
+  return { ok: true, rejected_by: approver || 'user', reason: reason || null, decision_id, base44_card: card };
 }
 
 // ───────────────────────────── HTTP ─────────────────────────────
 function readBody(req) { return new Promise((resolve) => { let b = ''; req.on('data', (c) => b += c);
   req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch (_) { resolve({}); } }); }); }
-function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj, null, 2)); }
+const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization' };
+function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', ...CORS }); res.end(JSON.stringify(obj, null, 2)); }
 
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://localhost');
   try {
+    // CORS 프리플라이트 — Base44 브라우저 앱의 승인 버튼 fetch 허용
+    if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
     if (req.method === 'GET' && u.pathname === '/health')
       return send(res, 200, { status: 'ok', service: 'axos-bridge', mode: 'mock', ts: now(), pending: held.size,
-        config: { n8nBase: CFG.n8nBase, callbackUrl: CFG.callbackUrl, token_configured: !!CFG.n8nToken } });
+        config: { n8nBase: CFG.n8nBase, callbackUrl: CFG.callbackUrl, token_configured: !!CFG.n8nToken,
+          base44: { appId: base44Card._CFG.appId, apiBase: base44Card._CFG.apiBase,
+            mode: base44Card._CFG.token ? 'live' : 'mock' } } });
 
     if (req.method === 'POST' && u.pathname === '/insight') {
       const body = await readBody(req);
@@ -230,24 +285,31 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/reject') {
       const body = await readBody(req);
       if (!body.decision_id) return send(res, 400, { ok: false, reason: 'decision_id required' });
-      return send(res, 200, reject(body.decision_id, body.approver, body.reason));
+      return send(res, 200, await reject(body.decision_id, body.approver, body.reason));
     }
     if (req.method === 'GET' && u.pathname === '/pending')
       return send(res, 200, { count: held.size, pending: Array.from(held.values()).map((h) => ({
         decision_id: h.env.decision_id, agent: h.env.agent, decision: h.env.decision, summary: h.env.summary,
         approval: h.env.approval_policy, ts: h.ts })) });
 
+    if (req.method === 'GET' && u.pathname === '/agents')
+      return send(res, 200, { count: Object.keys(AGENT_REGISTRY).length, registry: AGENT_REGISTRY,
+        intents: Object.keys(INTENT_ROUTE) });
+
+    if (req.method === 'GET' && u.pathname === '/memory')
+      return send(res, 200, { indexes: memory.INDEXES, stats: memory.stats() });
+
     if (req.method === 'GET' && u.pathname === '/audit') {
       let lines = []; try { lines = fs.readFileSync(CFG.auditFile, 'utf8').trim().split('\n').filter(Boolean); } catch (_) {}
       const n = parseInt(u.searchParams.get('n') || '20', 10);
       return send(res, 200, { count: lines.length, last: lines.slice(-n).map((l) => JSON.parse(l)) });
     }
-    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'GET /pending', 'GET /audit'] });
+    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'GET /pending', 'GET /audit', 'GET /agents', 'GET /memory'] });
   } catch (e) { send(res, 500, { ok: false, error: e.message }); }
 });
 
 server.listen(CFG.port, () => {
   console.log('[axos-bridge] mock 브리지 listening on http://localhost:' + CFG.port);
   console.log('[axos-bridge] n8n=' + CFG.n8nBase + '  callback=' + CFG.callbackUrl + '  token=' + (CFG.n8nToken ? 'set' : 'none'));
-  console.log('[axos-bridge] agents: scm(stock_risk/reorder), finance(cost_anomaly) | adapters: erp_mock');
+  console.log('[axos-bridge] agents: scm·procurement·sales·finance·hr·quality | memory: task/doc/conv/project(mock) | adapters: erp_mock, base44_card');
 });
