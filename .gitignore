@@ -1,0 +1,7 @@
+# 감사 로그(런타임 산출물) — 커밋 금지
+mock/audit.jsonl
+# 토큰/자격증명 — 절대 커밋 금지
+.env
+*.token
+secrets.*
+node_modules/

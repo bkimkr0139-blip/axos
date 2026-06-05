@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "axos/contracts/bridge/decision_envelope.schema.json",
+  "title": "DecisionEnvelope",
+  "description": "판단 레이어(Databricks/Agent)의 모든 출력 정규형. 브리지만이 이를 소비한다.",
+  "type": "object",
+  "required": ["decision_id", "agent", "decision", "summary", "evidence", "confidence", "proposed_actions", "approval_policy", "ts"],
+  "additionalProperties": false,
+  "properties": {
+    "decision_id": { "type": "string", "description": "멱등키. 이 결정의 고유 ID" },
+    "agent": { "type": "string", "enum": ["sales", "scm", "procurement", "finance", "hr", "quality", "copilot"] },
+    "decision": {
+      "type": "string",
+      "description": "표준 결정 동사",
+      "enum": ["send_alert", "generate_report", "index_document", "reindex_vector", "rag_answer", "route_llm", "check_wbs_delay", "simulate_eval", "create_po", "send_email", "create_issue", "noop"]
+    },
+    "summary": { "type": "string", "description": "사람이 읽는 한 줄 결정 요약" },
+    "evidence": {
+      "type": "array",
+      "description": "근거(데이터/문서/예측). 비면 브리지가 거부한다.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["delta_query", "document", "prediction", "policy", "metric"] },
+          "ref": { "type": "string", "description": "UC 경로/문서ID/모델명 등 출처" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "proposed_actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type", "target_system", "payload"],
+        "properties": {
+          "type": { "type": "string", "description": "decision과 정합. 실행 라우팅 키" },
+          "target_system": { "type": "string", "enum": ["n8n", "erp", "crm", "scm", "mail", "messenger", "base44"] },
+          "payload": { "type": "object" },
+          "dry_run_supported": { "type": "boolean", "default": true },
+          "compensation": { "type": "object", "description": "실패/철회 시 보상 행동" }
+        }
+      }
+    },
+    "approval_policy": {
+      "type": "object",
+      "required": ["level"],
+      "properties": {
+        "level": { "type": "string", "enum": ["auto", "approval_required", "dual_approval", "rejected"], "description": "자동화 성숙도 L0~L4 매핑" },
+        "reason": { "type": "string" },
+        "approvers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "guardrails": {
+      "type": "object",
+      "properties": {
+        "amount_limit": { "type": "number" },
+        "qty_limit": { "type": "number" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ts": { "type": "string", "format": "date-time" }
+  }
+}

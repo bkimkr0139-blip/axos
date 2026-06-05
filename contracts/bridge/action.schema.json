@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "axos/contracts/bridge/action.schema.json",
+  "title": "ActionRequest / ActionResult",
+  "description": "브리지→실행(n8n) 요청과 실행→브리지 결과.",
+  "type": "object",
+  "definitions": {
+    "ActionRequest": {
+      "type": "object",
+      "required": ["action_id", "decision_id", "workflow", "target_system", "payload", "dry_run", "ts"],
+      "additionalProperties": false,
+      "properties": {
+        "action_id": { "type": "string" },
+        "decision_id": { "type": "string", "description": "원 결정 멱등키(추적/감사)" },
+        "workflow": { "type": "string", "description": "n8n webhook path 예: notify, report-generate" },
+        "target_system": { "type": "string" },
+        "payload": { "type": "object", "description": "대상 워크플로우 계약에 맞춘 본문" },
+        "dry_run": { "type": "boolean", "default": false },
+        "callback_url": { "type": "string" },
+        "token": { "type": "string", "description": "실행 레이어 인증 토큰(로그 비노출)" },
+        "ts": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ActionResult": {
+      "type": "object",
+      "required": ["action_id", "decision_id", "status", "ts"],
+      "additionalProperties": false,
+      "properties": {
+        "action_id": { "type": "string" },
+        "decision_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["succeeded", "failed", "compensated", "skipped_dry_run"] },
+        "result": { "type": "object" },
+        "error": { "type": "object" },
+        "ts": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

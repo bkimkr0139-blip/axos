@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "axos/contracts/bridge/insight_request.schema.json",
+  "title": "InsightRequest",
+  "description": "경험(Base44)/스케줄/Agent → 판단 레이어 요청.",
+  "type": "object",
+  "required": ["request_id", "source", "intent", "ts"],
+  "additionalProperties": false,
+  "properties": {
+    "request_id": { "type": "string" },
+    "source": { "type": "string", "enum": ["base44", "schedule", "agent"] },
+    "intent": { "type": "string", "description": "판단 의도 키 예: stock_risk, cost_anomaly, quality_defect" },
+    "query": { "type": "string", "description": "자연어 질의(선택)" },
+    "context": { "type": "object", "description": "project_id/user_id/도메인 파라미터" },
+    "requested_by": { "type": "string" },
+    "ts": { "type": "string", "format": "date-time" }
+  }
+}

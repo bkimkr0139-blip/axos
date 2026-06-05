@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "axos/contracts/agents/agent_io.schema.json",
+  "title": "Agent I/O",
+  "description": "6 Agent 공통 입출력. 입력 AgentTrigger, 출력은 bridge DecisionEnvelope.",
+  "type": "object",
+  "definitions": {
+    "AgentTrigger": {
+      "type": "object",
+      "required": ["agent", "trigger", "ts"],
+      "additionalProperties": false,
+      "properties": {
+        "agent": { "type": "string", "enum": ["sales", "scm", "procurement", "finance", "hr", "quality"] },
+        "trigger": { "type": "string", "enum": ["schedule", "event", "user_query"] },
+        "intent": { "type": "string" },
+        "context": {
+          "type": "object",
+          "description": "project_id/user_id + 도메인 파라미터(품목/기간/라인 등)"
+        },
+        "ts": { "type": "string", "format": "date-time" }
+      }
+    },
+    "_output": {
+      "description": "Agent 출력은 contracts/bridge/decision_envelope.schema.json 을 그대로 따른다."
+    }
+  }
+}
