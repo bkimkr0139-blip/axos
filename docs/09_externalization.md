@@ -24,9 +24,8 @@ Base44(클라우드) ──fetch(+ngrok-skip-browser-warning)──▶ ngrok 예
 # 1) n8n (:5678) — ../n8n-pipeline/RESUME §2
 # 2) mock 콜백 (:4000)
 node C:\Users\User\works\base44\n8n-pipeline\mock\mock_callback_server.cjs
-# 3) 브리지 (:4100) — n8n 플로우 조회(/workflow) 쓰려면 N8N_API_KEY 주입
-$env:N8N_API_KEY = (node -e "const c=require(process.env.USERPROFILE+'/.claude.json');process.stdout.write(c.mcpServers['n8n-mcp'].env.N8N_API_KEY||'')")
-node C:\Users\User\works\base44\axos\mock\bridge_server.cjs   # 키 없으면 /workflow만 502, 나머지는 정상
+# 3) 브리지 (:4100) — axos/.env 자동 로드(N8N_API_KEY 등). 수동 주입 불필요.
+node C:\Users\User\works\base44\axos\mock\bridge_server.cjs   # .env 없거나 키 없으면 /workflow만 502, 나머지 정상
 # 4) 리버스 프록시 (:5000)
 node C:\Users\User\works\base44\axos\mock\reverse_proxy.cjs
 # 5) ngrok 타깃을 5000으로 (예약도메인 유지)
