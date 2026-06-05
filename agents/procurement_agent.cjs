@@ -10,6 +10,7 @@ const ITEMS = {
   A: { unit_price: 10000, need_qty: 550 },
   B: { unit_price: 8000, need_qty: 300 },
   C: { unit_price: 22000, need_qty: 200 },
+  D: { unit_price: 60000, need_qty: 300 },   // 고액 설비부품 → 이중승인 임계 초과(>1000만)
 };
 const SUPPLIERS = {
   A: [
@@ -18,6 +19,7 @@ const SUPPLIERS = {
   ],
   B: [{ id: 'SUP-A', name: '공급사A', otd: 0.95, price_factor: 1.00, quality: 0.96 }],
   C: [{ id: 'SUP-C', name: '공급사C', otd: 0.92, price_factor: 1.05, quality: 0.99 }],
+  D: [{ id: 'SUP-D', name: '공급사D', otd: 0.94, price_factor: 0.98, quality: 0.97 }],
 };
 const APPROVAL_THRESHOLD = 1000000;     // 100만원 초과 승인
 const DUAL_THRESHOLD = 10000000;        // 1000만원 초과 이중승인

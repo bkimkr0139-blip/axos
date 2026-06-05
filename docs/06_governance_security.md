@@ -28,15 +28,22 @@
 
 ---
 
-## 3. 실행 보안 (브리지 게이트)
+## 3. 실행 보안 (브리지 게이트) — **강제 구현 현황 (2026-06-05)**
 
-1. **인증**: 모든 호출 토큰 인증 — n8n `N8N_WEBHOOK_TOKEN`(현 `dev-local-token` 폴백), 브리지 토큰, 콜백 토큰.
-   - ⚠️ 운영 전환 시 강한 토큰으로 교체(현 dev 폴백은 로컬 전용). → docs/01 STEP7, n8n-pipeline RESUME §8.
-2. **승인 게이트(HITL)**: 되돌릴 수 없는·외부로 나가는 행동은 기본 승인(docs/04 §3).
-3. **멱등성**: `decision_id` 중복 차단 → 중복 발주/중복 메일 방지.
-4. **한도(Guardrail)**: 금액/수량/빈도 한도. 초과 시 자동 승급(승인 강제) 또는 거부.
-5. **드라이런**: 모든 외부 어댑터 `dry_run` 지원 → 시연·검증 시 실제 영향 0.
-6. **킬 스위치**: 시나리오별 즉시 중단 플래그(현장 통제감 = 수용성, docs/03).
+> 구현: `mock/governance.cjs`(정책 순수함수) + `mock/bridge_server.cjs`(게이트 강제). 검증: `scripts/test_governance.cjs`(단위 15), `scripts/smoke_governance.ps1`(end-to-end).
+
+1. **인증**: n8n 호출은 `N8N_WEBHOOK_TOKEN`(현 `dev-local-token` 폴백) 전달 ✅. 브리지 자체 엔드포인트 토큰은 로컬 전용으로 미적용(운영 시 추가). ⚠️ 운영 전환 시 강한 토큰 교체.
+2. **승인 게이트(HITL)**: 외부/되돌릴 수 없는 행동 기본 승인 ✅ (held→/approve).
+3. **멱등성**: `decision_id` 중복 차단 ✅.
+4. **한도(Guardrail)** ✅: `guardrails.amount_limit/qty_limit` 초과 → **거부**(`checkGuardrails`). 게이트에서 강제.
+5. **신뢰도 임계** ✅: `confidence < AXOS_CONFIDENCE_MIN`(기본 0.5)인 auto 결정 → **승인 강제 승급(escalate)**(`checkConfidence`).
+6. **만료** ✅: `guardrails.expires_at` 경과한 held는 승인 불가·자동 폐기(`isExpired`).
+7. **RBAC + SoD** ✅: 승인자가 `approval_policy.approvers` 역할 구성원인지 + 판단주체(ai)와 분리 검증(`authorizeApprover`, `ROLE_MEMBERS`).
+8. **이중승인** ✅: `dual_approval` 결정은 **서로 다른 2인** 승인 시에만 실행(부분승인 추적, 동일인 중복 차단).
+9. **드라이런**: 모든 외부 어댑터 `dry_run` 지원 ✅.
+10. **킬 스위치** ✅: `POST /kill|/unkill {agent?}` — 실행 직전 차단(전역/agent별).
+11. **보상(Compensation)** ✅: `POST /compensate {decision_id}` → ERP `cancelPO` + 감사. 멱등 해제로 재실행 가능.
+12. **운영 지표** ✅: `GET /metrics` — 감사 집계(자동화율·성공률·agent별·ROI). STEP10 대시보드 소비.
 
 ---
 

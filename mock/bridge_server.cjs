@@ -29,6 +29,7 @@ const financeAgent = require('../agents/finance_agent.cjs');
 const hrAgent = require('../agents/hr_agent.cjs');
 const qualityAgent = require('../agents/quality_agent.cjs');
 const memory = require('../memory/memory_mock.cjs');
+const gov = require('./governance.cjs');
 const erp = require('../adapters/erp_mock.cjs');
 const base44Card = require('../adapters/base44_card.cjs');
 
@@ -53,7 +54,9 @@ const CFG = {
 const now = () => new Date().toISOString();
 const uid = (p) => p + '-' + crypto.randomUUID().slice(0, 8);
 const idempotency = new Map(); // decision_id -> ActionResult (중복 실행 차단)
-const held = new Map();        // decision_id -> { env, req, ts } (승인 대기)
+const held = new Map();        // decision_id -> { env, req, ts, card_id, approvals[] } (승인 대기)
+const killed = { global: false, agents: new Set() }; // 킬 스위치 (docs/06 §3.6)
+const poByDecision = new Map();  // decision_id -> po_id (보상용)
 
 // ───────────────────────────── 감사 ─────────────────────────────
 function audit(rec) {
@@ -148,10 +151,16 @@ async function execute(env, dryRun) {
   const action = env.proposed_actions[0];
   const action_id = uid('act');
 
+  // 킬 스위치 (docs/06 §3.6) — 실 실행 직전 차단 (dryRun은 영향 없음)
+  if (!dryRun && (killed.global || killed.agents.has(env.agent)))
+    return { action_id, decision_id: env.decision_id, status: 'failed',
+      error: { message: 'kill_switch_active:' + (killed.global ? 'global' : env.agent) }, ts: now() };
+
   // create_po → ERP 어댑터(쓰기) + 결과 알림(n8n notify)
   if (action.type === 'create_po' && action.target_system === 'erp') {
     const po = erp.createPO(action.payload, { dry_run: dryRun, idempotency_key: env.decision_id });
     if (dryRun) return { action_id, decision_id: env.decision_id, status: 'skipped_dry_run', result: { erp: po }, ts: now() };
+    if (po && po.po_id) poByDecision.set(env.decision_id, po.po_id); // 보상용 기록
     // 발주 완료 → 담당자 알림 (실행 레이어 체이닝)
     const note = await callN8n('notify', { request_id: uid('req'), project_id: action.payload.project_id || 'PRJ',
       user_id: action.payload.user_id || 'U', channel: 'telegram',
@@ -202,16 +211,32 @@ async function runInsight(req, dryRun) {
   if (idempotency.has(env.decision_id)) { trace.steps.push({ step: 'idempotency', note: 'duplicate' });
     return { ok: true, idempotent: true, result: idempotency.get(env.decision_id), trace }; }
 
-  const level = env.approval_policy.level;
+  let level = env.approval_policy.level;
   if (level === 'rejected') { trace.steps.push({ step: 'gate', result: 'rejected' });
     audit({ decision_id: env.decision_id, actor: 'bridge', event: 'rejected', summary: env.approval_policy.reason });
     return { ok: false, reason: env.approval_policy.reason, trace }; }
 
+  // ── 거버넌스 강제 (docs/06) ──
+  // §3.4 한도: 초과 → 거부
+  const grd = gov.checkGuardrails(env);
+  if (grd.verdict === 'reject') { trace.steps.push({ step: 'guardrail', result: 'rejected', reason: grd.reason });
+    audit({ decision_id: env.decision_id, actor: 'bridge', event: 'rejected', summary: 'guardrail: ' + grd.reason });
+    return { ok: false, reason: 'guardrail: ' + grd.reason, trace }; }
+  // §5 신뢰도 임계: auto인데 낮으면 승인 강제(승급)
+  const conf = gov.checkConfidence(env);
+  if (conf.verdict === 'escalate' && level === 'auto') {
+    level = 'approval_required';
+    env.approval_policy = { ...env.approval_policy, level, reason: conf.reason, escalated_from: 'auto' };
+    trace.steps.push({ step: 'confidence', result: 'escalated', reason: conf.reason });
+    audit({ decision_id: env.decision_id, actor: 'bridge', event: 'escalated', summary: conf.reason });
+  }
+
   if (level !== 'auto' && !dryRun) {
     // 방향1: Base44에 승인 카드 생성 (decision_id로 연결). 토큰 없으면 mock 매핑 반환.
     const card = await base44Card.createCard(env, req);
-    held.set(env.decision_id, { env, req, ts: now(), card_id: card.card_id });
-    trace.steps.push({ step: 'gate', result: 'held_for_approval', level, reason: env.approval_policy.reason });
+    held.set(env.decision_id, { env, req, ts: now(), card_id: card.card_id, approvals: [] });
+    trace.steps.push({ step: 'gate', result: 'held_for_approval', level, reason: env.approval_policy.reason,
+      requires: gov.requiredApprovals(env) });
     trace.steps.push({ step: 'base44_card', card_id: card.card_id, mock: !!card.mock });
     audit({ decision_id: env.decision_id, actor: 'bridge', event: 'held_for_approval', summary: env.summary,
       value: (env.proposed_actions[0].payload || {}).amount, evidence_ref: card.card_id });
@@ -230,14 +255,50 @@ async function runInsight(req, dryRun) {
 async function approve(decision_id, approver) {
   const h = held.get(decision_id);
   if (!h) return { ok: false, reason: 'not_found_or_already_resolved', decision_id };
-  audit({ decision_id, actor: approver || 'user', event: 'approved', summary: h.env.summary });
+
+  // 만료 검증 (docs/06 §1 설계원칙2) — 만료 봉투는 승인 불가, 폐기
+  if (gov.isExpired(h.env, Date.now())) {
+    held.delete(decision_id);
+    audit({ decision_id, actor: 'bridge', event: 'expired', summary: h.env.summary });
+    await base44Card.closeCard(h.card_id, 'rejected', '만료(expires_at 경과)로 자동 폐기');
+    return { ok: false, reason: 'expired', decision_id };
+  }
+  // RBAC + SoD (docs/06 §2) — 승인자 권한·직무분리 검증
+  const auth = gov.authorizeApprover(h.env, approver, h.approvals);
+  if (!auth.ok) {
+    audit({ decision_id, actor: approver || '(none)', event: 'approval_denied', summary: auth.reason });
+    return { ok: false, reason: auth.reason, decision_id };
+  }
+
+  // 이중승인 추적
+  h.approvals.push(approver);
+  const need = gov.requiredApprovals(h.env);
+  audit({ decision_id, actor: approver, event: 'approved', summary: `${h.approvals.length}/${need} ${h.env.summary}` });
+  if (h.approvals.length < need) {
+    return { ok: true, pending_more_approval: true, approvals: h.approvals.slice(), need, decision_id,
+      note: `이중승인: ${h.approvals.length}/${need} — 다른 승인자 1명 더 필요` };
+  }
+
   held.delete(decision_id);
-  const result = await runExecute(h.env, false, approver || 'user');
+  const result = await runExecute(h.env, false, approver);
   // 방향3: Base44 카드 닫기 (실행 성공이면 completed)
   const card = await base44Card.closeCard(h.card_id,
     result.status === 'succeeded' ? 'completed' : 'in_progress',
-    `브리지 승인 실행: ${result.status} (by ${approver || 'user'})`);
-  return { ok: result.status === 'succeeded', approved_by: approver || 'user', result, base44_card: card };
+    `브리지 승인 실행: ${result.status} (by ${h.approvals.join(', ')})`);
+  return { ok: result.status === 'succeeded', approved_by: h.approvals.slice(), result, base44_card: card };
+}
+
+// 보상 트랜잭션 (docs/06 §3, docs/04 §5) — 실행된 발주 취소
+async function compensate(decision_id, actor, reason) {
+  const po_id = poByDecision.get(decision_id);
+  if (!po_id) return { ok: false, reason: 'no_executed_po_for_decision', decision_id };
+  const r = erp.cancelPO(po_id);
+  const ok = r && r.status === 'cancelled';
+  idempotency.delete(decision_id); // 보상 후 재실행 가능하도록 멱등 해제
+  poByDecision.delete(decision_id);
+  audit({ decision_id, actor: actor || 'user', event: 'compensated', summary: `PO ${po_id} 취소: ${reason || '(사유없음)'}` });
+  memory.remember('task_memory', { agent: 'bridge', decision: 'cancel_po', summary: `보상: PO ${po_id} 취소`, status: ok ? 'compensated' : 'failed', actor: actor || 'user' });
+  return { ok, decision_id, po: r, compensated_by: actor || 'user' };
 }
 async function reject(decision_id, approver, reason) {
   const h = held.get(decision_id);
@@ -287,10 +348,29 @@ const server = http.createServer(async (req, res) => {
       if (!body.decision_id) return send(res, 400, { ok: false, reason: 'decision_id required' });
       return send(res, 200, await reject(body.decision_id, body.approver, body.reason));
     }
+    if (req.method === 'POST' && u.pathname === '/compensate') {
+      const body = await readBody(req);
+      if (!body.decision_id) return send(res, 400, { ok: false, reason: 'decision_id required' });
+      const out = await compensate(body.decision_id, body.actor, body.reason);
+      return send(res, out.ok ? 200 : 404, out);
+    }
+    // 킬 스위치 (docs/06 §3.6): body.agent 없으면 global
+    if (req.method === 'POST' && u.pathname === '/kill') {
+      const body = await readBody(req);
+      if (body.agent) killed.agents.add(body.agent); else killed.global = true;
+      audit({ decision_id: '-', actor: body.actor || 'ops', event: 'kill_switch_on', summary: body.agent || 'global' });
+      return send(res, 200, { ok: true, killed: { global: killed.global, agents: Array.from(killed.agents) } });
+    }
+    if (req.method === 'POST' && u.pathname === '/unkill') {
+      const body = await readBody(req);
+      if (body.agent) killed.agents.delete(body.agent); else killed.global = false;
+      audit({ decision_id: '-', actor: body.actor || 'ops', event: 'kill_switch_off', summary: body.agent || 'global' });
+      return send(res, 200, { ok: true, killed: { global: killed.global, agents: Array.from(killed.agents) } });
+    }
     if (req.method === 'GET' && u.pathname === '/pending')
       return send(res, 200, { count: held.size, pending: Array.from(held.values()).map((h) => ({
         decision_id: h.env.decision_id, agent: h.env.agent, decision: h.env.decision, summary: h.env.summary,
-        approval: h.env.approval_policy, ts: h.ts })) });
+        approval: h.env.approval_policy, approvals: h.approvals, requires: gov.requiredApprovals(h.env), ts: h.ts })) });
 
     if (req.method === 'GET' && u.pathname === '/agents')
       return send(res, 200, { count: Object.keys(AGENT_REGISTRY).length, registry: AGENT_REGISTRY,
@@ -304,7 +384,30 @@ const server = http.createServer(async (req, res) => {
       const n = parseInt(u.searchParams.get('n') || '20', 10);
       return send(res, 200, { count: lines.length, last: lines.slice(-n).map((l) => JSON.parse(l)) });
     }
-    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'GET /pending', 'GET /audit', 'GET /agents', 'GET /memory'] });
+
+    // STEP10 운영 지표 — 감사로그 집계 (Base44 대시보드가 소비 가능)
+    if (req.method === 'GET' && u.pathname === '/metrics') {
+      let recs = []; try { recs = fs.readFileSync(CFG.auditFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch (_) {}
+      const ev = (e) => recs.filter((r) => r.event === e).length;
+      const executed = ev('executed'), decided = ev('decided');
+      const byAgent = {};
+      recs.filter((r) => r.event === 'decided' && r.agent).forEach((r) => { byAgent[r.agent] = (byAgent[r.agent] || 0) + 1; });
+      const savedValue = recs.filter((r) => r.event === 'executed' && typeof r.value === 'number').reduce((s, r) => s + r.value, 0);
+      // ROI 추정: 자동/승인 실행 1건당 표준 절감 2h × 30,000원
+      const roi_saved_krw = executed * 2 * 30000;
+      return send(res, 200, { ts: now(),
+        totals: { decided, held: ev('held_for_approval'), approved: ev('approved'), executed,
+          rejected: ev('rejected') + ev('rejected_by_human'), escalated: ev('escalated'),
+          compensated: ev('compensated'), failed: ev('failed') },
+        automation_rate: decided ? Number((executed / decided).toFixed(2)) : 0,
+        success_rate: (executed + ev('failed')) ? Number((executed / (executed + ev('failed'))).toFixed(2)) : 1,
+        decisions_by_agent: byAgent,
+        roi: { auto_executed: executed, est_hours_saved: executed * 2, est_saved_krw: roi_saved_krw, transacted_value_krw: savedValue },
+        kill_switch: { global: killed.global, agents: Array.from(killed.agents) },
+        memory: memory.stats() });
+    }
+
+    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory'] });
   } catch (e) { send(res, 500, { ok: false, error: e.message }); }
 });
 
@@ -312,4 +415,5 @@ server.listen(CFG.port, () => {
   console.log('[axos-bridge] mock 브리지 listening on http://localhost:' + CFG.port);
   console.log('[axos-bridge] n8n=' + CFG.n8nBase + '  callback=' + CFG.callbackUrl + '  token=' + (CFG.n8nToken ? 'set' : 'none'));
   console.log('[axos-bridge] agents: scm·procurement·sales·finance·hr·quality | memory: task/doc/conv/project(mock) | adapters: erp_mock, base44_card');
+  console.log('[axos-bridge] governance: guardrail·confidence(min ' + gov.CONFIDENCE_MIN + ')·expiry·RBAC/SoD·dual-approval·kill-switch·compensation | /metrics');
 });

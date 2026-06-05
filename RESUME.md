@@ -42,6 +42,7 @@ powershell -ExecutionPolicy Bypass -File C:\Users\User\works\base44\axos\scripts
 - ✅ **STEP10 운영 대시보드 + STEP3 데이터소스 + STEP2 Databricks 화면**(Base44 MCP): KPI/ROI/차트, DataSource 9종·DatabricksConfig 5종 시드.
 - ✅ **end-to-end 실증**(2026-06-05, n8n :5678 UP): 자동실행 sales/hr/quality/copilot 전부 succeeded, 승인루프 SCM held→approve→ERP PO(PO-99BF3E8D, 5,335,000원)+notify delivered+카드 completed. 감사 decided→held→approved→executed, task_memory 누적.
 - ✅ **GitHub push**(커밋 6c38451): origin main. 런타임 jsonl(audit/memory)는 .gitignore.
+- ✅ **거버넌스 하드닝**(2026-06-05, docs/06 §3): `mock/governance.cjs` + 브리지 게이트 강제 — 한도(거부)·신뢰도임계(승급)·만료·RBAC/SoD·이중승인(2인)·킬스위치(/kill·/unkill)·보상(/compensate)·운영지표(/metrics). 검증: `scripts/test_governance.cjs`(단위 15/15), `scripts/smoke_governance.ps1`(e2e: RBAC 거부→실행, 이중승인 PO 17,640,000원, 킬스위치 차단, 보상 취소, metrics).
 
 ## 4. 다음 작업 (TODO — 자격증명 의존, 코드는 드롭인 준비완료)
 - [ ] **Databricks live**(핵심 잔여): 워크스페이스/PAT 확보 시 `adapters/databricks_judge.cjs`로 judge 교체(PIPELINE_MODE=live), audit/memory를 Delta·Vector로. 계약 불변. DatabricksConfig 엔티티에 값 주입.
