@@ -19,27 +19,28 @@
 
 ## 2. mock end-to-end 기동·검증
 ```powershell
-# (n8n 01~10 active 확인)
-curl http://localhost:5678/webhook/health
-# 브리지 기동
-node C:\Users\User\works\base44\axos\mock\bridge_server.cjs    # :4100
-# 스모크 (판단->봉투->게이트->실행->감사)
+curl http://localhost:5678/webhook/health                      # n8n 01~10 active 확인
+node C:\Users\User\works\base44\axos\mock\bridge_server.cjs     # 브리지 :4100
 powershell -ExecutionPolicy Bypass -File C:\Users\User\works\base44\axos\scripts\smoke_bridge.ps1
 ```
-기대: (1) skipped_dry_run (2) succeeded + n8n payload (3) held_for_approval (4) audit 이벤트.
+브리지 엔드포인트: `POST /insight`(?dry_run=1) · `POST /approve {decision_id,approver}` · `POST /reject` · `GET /pending` · `GET /audit?n=` · `GET /health`.
+구성요소: `agents/scm_agent.cjs`(재고예측→발주추천) · `adapters/erp_mock.cjs`(PO 쓰기/취소) · 라우팅 intent→agent.
+기대: (1)dry_run+erp.would_create (2)held (3)pending=1 (4)approve→PO생성+notify (5)(6)auto notify (7)decided/held/approved/executed.
 
-## 3. 2026-06-05 검증 결과 (완료분)
-- ✅ 마스터 청사진 + STEP1~10 매핑 + 레거시통합 + AX전환 플레이북 + 거버넌스 문서(docs/00~07)
-- ✅ 브리지 3계약(InsightRequest/DecisionEnvelope/ActionRequest) + Agent I/O 계약(contracts/)
-- ✅ mock 브리지 end-to-end 통과: stock_risk → n8n 08 notify 실행(succeeded), create_po → 승인게이트 held
+## 3. 검증 결과 (완료분)
+- ✅ (2026-06-05) 마스터 청사진 + STEP1~10 매핑 + 레거시통합 + AX전환 플레이북 + 거버넌스(docs/00~07)
+- ✅ 브리지 3계약 + Agent I/O 계약(contracts/), mock 브리지 end-to-end
+- ✅ **STEP2 SCM 수직슬라이스**: SCM agent(item A 결품예측→550개 발주, 5,335,000원)→ERP 어댑터 PO 생성 + notify
+- ✅ **STEP3 승인 응답 루프**: held→/approve→execute(ERP+notify), /reject 폐기, /pending. HITL 체인 감사 기록
+- ✅ STEP1 Base44 MCP **등록·인증 완료**(✓Connected). 실제 엔티티/화면/API 스캔만 세션 재시작 후(OAuth 불필요)
 
 ## 4. 다음 작업 (TODO, 우선순위)
-- [ ] **STEP1**: Base44 MCP 연결(docs/07) → `docs/step1_base44_inventory.md`(엔티티/화면/API)
-- [ ] **SCM Agent 수직슬라이스**: 판단(mock)→봉투→브리지→08/ERP어댑터(mock)→감사→업무기억 (대표 시나리오, docs/00 §3)
-- [ ] **승인 응답 루프**: 현 mock은 held까지만. Base44 승인카드→브리지 콜백→execute 완성
-- [ ] **Databricks live**: 자격증명 확보 시 judge()를 Model Serving/Jobs 호출로, audit를 Delta append로 교체. 계약 불변
+- [ ] **STEP1 스캔**: 세션 재시작 → base44 MCP 도구로 엔티티/화면/API 조회 → `docs/step1_base44_inventory.md` 채우기
+- [ ] **나머지 5 Agent**: SCM 골격(agents/scm_agent.cjs) 템플릿화 → Sales/Procurement/Finance/HR/Quality 수평 복제
+- [ ] **Base44 승인 카드 연동**: 현재 /approve는 API. Base44 화면 승인 버튼→브리지 /approve 콜백 연결
+- [ ] **Databricks live**: judge(agents)를 Model Serving/Jobs로, audit를 Delta append로 교체. 계약 불변
 - [ ] **운영토큰**: n8n `N8N_WEBHOOK_TOKEN`·브리지 토큰 강한 값으로 (현 dev 폴백, 로컬 전용)
-- [ ] **GitHub push**: 사용자 승인 시 신규 axos repo 원격 생성·push
+- [ ] **GitHub push**: 신규 axos repo 원격 생성·push (gh auth 확인)
 
 ## 5. 함정
 - `.js`는 상위 package.json(type:module) 때문에 ESM 오류 → Node 단독 실행은 `.cjs`.
