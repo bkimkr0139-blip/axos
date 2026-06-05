@@ -7,18 +7,18 @@
  */
 'use strict';
 
-// ── n8n 실행 레이어 (BC44 파이프라인 01~10) ──
+// ── n8n 실행 레이어 (BC44 파이프라인 01~10) ── n8n_id = 실제 n8n 워크플로우 ID(에디터/플로우 조회용)
 const WORKFLOWS = [
-  { id: '01', name: 'document-ingest', desc: '문서 적재→임베딩', triggers: ['webhook'], memory: 'document_memory' },
-  { id: '02', name: 'rag-chat', desc: 'RAG 대화 응답', triggers: ['webhook'], memory: 'conversation_memory' },
-  { id: '03', name: 'web-crawl', desc: '웹 수집', triggers: ['webhook', 'schedule'] },
-  { id: '04', name: 'evaluation-simulate', desc: '예측/시뮬레이션', triggers: ['webhook'] },
-  { id: '05', name: 'report-generate', desc: '리포트 생성', triggers: ['webhook'] },
-  { id: '06', name: 'wbs-delay-check', desc: '프로젝트 지연 점검', triggers: ['webhook', 'schedule'], memory: 'project_memory' },
-  { id: '07', name: 'llm-route', desc: 'LLM 라우팅/요약', triggers: ['webhook'] },
-  { id: '08', name: 'notify', desc: '알림(텔레그램/메일)', triggers: ['webhook'] },
-  { id: '09', name: 'vector-reindex', desc: '벡터 재색인', triggers: ['webhook', 'schedule'] },
-  { id: '10', name: 'health', desc: '헬스/상태', triggers: ['webhook'] },
+  { id: '01', name: 'document-ingest', desc: '문서 적재→임베딩', triggers: ['webhook'], memory: 'document_memory', n8n_id: 'UkAaB6vqATmoRqk2' },
+  { id: '02', name: 'rag-chat', desc: 'RAG 대화 응답', triggers: ['webhook'], memory: 'conversation_memory', n8n_id: 'l5FiRxpbkoQv7Jlq' },
+  { id: '03', name: 'web-crawl', desc: '웹 수집', triggers: ['webhook', 'schedule'], n8n_id: 'o9uu5L3w1KO7pyUW' },
+  { id: '04', name: 'evaluation-simulate', desc: '예측/시뮬레이션', triggers: ['webhook'], n8n_id: 'q83JgEzoaf95nhnC' },
+  { id: '05', name: 'report-generate', desc: '리포트 생성', triggers: ['webhook'], n8n_id: 'ceOeKkZS7jSHqJbE' },
+  { id: '06', name: 'wbs-delay-check', desc: '프로젝트 지연 점검', triggers: ['webhook', 'schedule'], memory: 'project_memory', n8n_id: 'UXjXvJqH4KkwCxrQ' },
+  { id: '07', name: 'llm-route', desc: 'LLM 라우팅/요약', triggers: ['webhook'], n8n_id: 'Qmx5AEi25ybBlkwg' },
+  { id: '08', name: 'notify', desc: '알림(텔레그램/메일)', triggers: ['webhook'], n8n_id: 'q3hKK18G4WV88AC9' },
+  { id: '09', name: 'vector-reindex', desc: '벡터 재색인', triggers: ['webhook', 'schedule'], n8n_id: 'h9vUdJTAeLGivAPt' },
+  { id: '10', name: 'health', desc: '헬스/상태', triggers: ['webhook'], n8n_id: '54x25z8fKKCrd1Ab' },
 ];
 
 // 결정(decision) → n8n 워크플로우 라우팅 (브리지 mapWorkflow 미러 + 강조용 메타)

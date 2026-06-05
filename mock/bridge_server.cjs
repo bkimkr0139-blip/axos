@@ -49,6 +49,7 @@ const CFG = {
   port: parseInt(process.env.BRIDGE_PORT || '4100', 10),
   n8nBase: process.env.N8N_BASE_URL || 'http://localhost:5678',
   n8nToken: process.env.N8N_WEBHOOK_TOKEN || 'dev-local-token',
+  n8nApiKey: process.env.N8N_API_KEY || '', // n8n REST(워크플로우 플로우 조회)용. 서버사이드 전용, Base44에 미노출
   callbackUrl: process.env.BASE44_CALLBACK_URL || 'http://localhost:4000/mock-callback',
   auditFile: path.join(__dirname, 'audit.jsonl'),
 };
@@ -157,6 +158,32 @@ function getN8nHealth() {
         resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, body: j }); });
     });
     r.on('error', () => resolve({ ok: false })); r.on('timeout', () => { r.destroy(); resolve({ ok: false }); });
+  });
+}
+// n8n 워크플로우 정의 조회 → 단순화(노드+연결 엣지). API 키는 서버사이드(브리지)에만.
+function fetchWorkflowFlow(id) {
+  return new Promise((resolve) => {
+    if (!CFG.n8nApiKey) return resolve({ ok: false, error: 'n8n_api_key_not_set' });
+    let u; try { u = new URL(CFG.n8nBase + '/api/v1/workflows/' + id); } catch (e) { return resolve({ ok: false, error: 'bad_id' }); }
+    const r = http.get({ hostname: u.hostname, port: u.port || 80, path: u.pathname, timeout: 6000,
+      headers: { 'X-N8N-API-KEY': CFG.n8nApiKey, Accept: 'application/json' } }, (res) => {
+      let b = ''; res.on('data', (c) => b += c); res.on('end', () => {
+        if (res.statusCode >= 300) return resolve({ ok: false, error: 'n8n ' + res.statusCode });
+        let w; try { w = JSON.parse(b); } catch (_) { return resolve({ ok: false, error: 'parse' }); }
+        const nodes = (w.nodes || []).map((n) => ({ name: n.name,
+          type: String(n.type || '').replace('n8n-nodes-base.', ''), position: n.position || [0, 0] }));
+        // connections → edges [{from,to}]
+        const edges = [];
+        const conns = w.connections || {};
+        for (const from of Object.keys(conns)) {
+          const outs = (conns[from] && conns[from].main) || [];
+          outs.forEach((arr) => (arr || []).forEach((c) => { if (c && c.node) edges.push({ from, to: c.node }); }));
+        }
+        resolve({ ok: true, id: w.id, name: w.name, active: !!w.active, nodes, edges });
+      });
+    });
+    r.on('error', (e) => resolve({ ok: false, error: e.message }));
+    r.on('timeout', () => { r.destroy(); resolve({ ok: false, error: 'timeout' }); });
   });
 }
 
@@ -424,8 +451,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && u.pathname === '/workflows') {
       const h = await getN8nHealth();
       return send(res, 200, { engine: 'n8n', base: CFG.n8nBase,
-        online: h.ok, health: h.body || null,
+        online: h.ok, health: h.body || null, flow_api: !!CFG.n8nApiKey,
         count: engines.WORKFLOWS.length, workflows: engines.WORKFLOWS, routing: engines.DECISION_ROUTING });
+    }
+
+    // 단일 워크플로우 플로우(노드+연결) — 카드 클릭 시 n8n 플로우 표시용
+    if (req.method === 'GET' && u.pathname === '/workflow') {
+      const id = u.searchParams.get('id');
+      if (!id) return send(res, 400, { ok: false, error: 'id required' });
+      const flow = await fetchWorkflowFlow(id);
+      return send(res, flow.ok ? 200 : 502, flow);
     }
 
     // Databricks 판단 레이어 노출 — 메달리온 카탈로그 + 계보 + judge 모드
@@ -440,7 +475,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { engine: 'databricks:mosaic_ai', ts: now(),
         predictions: engines.predictions({ scm: scmAgent, sales: salesAgent, hr: hrAgent, quality: qualityAgent, finance: financeAgent, procurement: procurementAgent }) });
 
-    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /catalog', 'GET /predictions'] });
+    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /workflow?id=', 'GET /catalog', 'GET /predictions'] });
   } catch (e) { send(res, 500, { ok: false, error: e.message }); }
 });
 
