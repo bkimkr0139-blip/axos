@@ -46,6 +46,7 @@ const qualityAgent = require('../agents/quality_agent.cjs');
 const memory = require('../memory/memory_mock.cjs');
 const gov = require('./governance.cjs');
 const engines = require('./engines.cjs');
+const mxflowBuilder = require('./mxflow_builder.cjs');
 const dbxJudge = require('../adapters/databricks_judge.cjs');
 const erp = require('../adapters/erp_mock.cjs');
 const base44Card = require('../adapters/base44_card.cjs');
@@ -478,6 +479,38 @@ const server = http.createServer(async (req, res) => {
       return send(res, flow.ok ? 200 : 502, flow);
     }
 
+    // ── MX-Flow AI 어시스트: 자연어 → 워크플로우 생성/수정 ──
+    const builderCfg = { n8nBase: CFG.n8nBase, n8nApiKey: CFG.n8nApiKey };
+    if (req.method === 'POST' && u.pathname === '/assist/preview') {
+      const body = await readBody(req);
+      if (!body.instruction) return send(res, 400, { ok: false, error: 'instruction required' });
+      const out = await mxflowBuilder.preview(builderCfg, body.instruction, body.workflow_id);
+      return send(res, out.ok ? 200 : 502, out);
+    }
+    if (req.method === 'POST' && u.pathname === '/assist/create') {
+      const body = await readBody(req);
+      if (!body.instruction) return send(res, 400, { ok: false, error: 'instruction required' });
+      if (killed.global) return send(res, 423, { ok: false, error: 'kill_switch_active' });
+      if (!CFG.n8nApiKey) return send(res, 502, { ok: false, error: 'n8n_api_key_not_set (.env)' });
+      const out = await mxflowBuilder.create(builderCfg, body.instruction);
+      audit({ decision_id: '-', actor: body.actor || 'user', event: out.ok ? 'workflow_created' : 'failed',
+        summary: 'AI생성 워크플로우: ' + (out.name || body.instruction.slice(0, 40)) });
+      return send(res, out.ok ? 200 : 502, out);
+    }
+    if (req.method === 'POST' && u.pathname === '/assist/modify') {
+      const body = await readBody(req);
+      if (!body.workflow_id || !body.instruction)
+        return send(res, 400, { ok: false, error: 'workflow_id, instruction required' });
+      if (killed.global) return send(res, 423, { ok: false, error: 'kill_switch_active' });
+      if (!CFG.n8nApiKey) return send(res, 502, { ok: false, error: 'n8n_api_key_not_set (.env)' });
+      const out = await mxflowBuilder.modify(builderCfg, body.workflow_id, body.instruction);
+      audit({ decision_id: '-', actor: body.actor || 'user', event: out.ok ? 'workflow_modified' : 'failed',
+        summary: 'AI수정본: ' + (out.name || body.workflow_id) });
+      return send(res, out.ok ? 200 : 502, out);
+    }
+    if (req.method === 'GET' && u.pathname === '/assist/templates')
+      return send(res, 200, { templates: mxflowBuilder.TEMPLATES.map((t) => ({ intent: t.intent, label: t.label })) });
+
     // Databricks 판단 레이어 노출 — 메달리온 카탈로그 + 계보 + judge 모드
     if (req.method === 'GET' && u.pathname === '/catalog')
       return send(res, 200, { engine: 'databricks',
@@ -490,7 +523,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { engine: 'databricks:mosaic_ai', ts: now(),
         predictions: engines.predictions({ scm: scmAgent, sales: salesAgent, hr: hrAgent, quality: qualityAgent, finance: financeAgent, procurement: procurementAgent }) });
 
-    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /workflow?id=', 'GET /catalog', 'GET /predictions'] });
+    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /workflow?id=', 'POST /assist/preview', 'POST /assist/create', 'POST /assist/modify', 'GET /catalog', 'GET /predictions'] });
   } catch (e) { send(res, 500, { ok: false, error: e.message }); }
 });
 
