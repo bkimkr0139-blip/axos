@@ -14,6 +14,21 @@ const crypto = require('crypto');
 const llm = require('./llm.cjs');
 const uid = () => crypto.randomUUID();
 
+// 실제 이메일 발송 — 등록된 SMTP 자격증명(Gmail) 재사용. 더미/시뮬레이션 금지.
+const EMAIL = {
+  credId: process.env.AXOS_SMTP_CRED_ID || '9ocJakHheQojhfiT',
+  credName: process.env.AXOS_SMTP_CRED_NAME || 'SMTP account 2',
+  from: process.env.AXOS_EMAIL_FROM || 'BC Kim <bkimkr0139@gmail.com>',
+  defaultTo: process.env.AXOS_EMAIL_DEFAULT_TO || 'bckim@wizbase.co.kr',
+};
+function isEmailIntent(s) { return /메일|이메일|e-?mail|smtp|gmail|발송|보내|send\s*(an?\s*)?(test\s*)?e?-?mail/i.test(String(s || '')); }
+function emailSendNode(pos) {
+  return { parameters: { fromEmail: EMAIL.from, toEmail: '={{ $json.to }}', subject: '={{ $json.subject }}',
+      emailFormat: 'text', text: '={{ $json.body }}', options: { appendAttribution: false } },
+    id: uid(), name: 'Send Email (SMTP)', type: 'n8n-nodes-base.emailSend', typeVersion: 2.1, position: pos,
+    credentials: { smtp: { id: EMAIL.credId, name: EMAIL.credName } } };
+}
+
 // n8n Code 노드 샌드박스 규칙 (생성/수정 공통) — process.env 등 미지원 → 실행 실패 방지
 const N8N_CODE_RULES = [
   'n8n Code node sandbox — STRICT RULES (violating these makes the workflow fail at runtime):',
@@ -225,10 +240,14 @@ async function modify(cfg, workflowId, instruction) {
   if (!String(wf.name || '').startsWith('[AI]'))
     return { ok: false, error: 'protected (AI 생성 워크플로우만 AI 수정 가능)' };
 
+  const hadEmail = (wf.nodes || []).some((n) => String(n.type).endsWith('.emailSend')) || isEmailIntent(wf.name) || isEmailIntent(instruction);
   const codes = (wf.nodes || []).filter((n) => String(n.type).endsWith('.code'))
     .map((n, i) => '[' + (i + 1) + '] ' + n.name + ':\n' + ((n.parameters || {}).jsCode || ''));
+  const emailNote = hadEmail
+    ? '\n\n[중요] 이것은 이메일 워크플로우다. 너의 마지막 Code 스텝은 반드시 return [{ json: { to, subject, body } }] 형태여야 한다. 직접 발송하지 마라(process.env/SMTP 금지). AXOS가 실제 Email Send 노드를 뒤에 자동으로 붙인다.'
+    : '';
   const userMsg = '현재 워크플로우 이름: ' + wf.name + '\n\n현재 Code 노드:\n'
-    + (codes.join('\n\n') || '(코드 노드 없음)') + '\n\n사용자 보고(에러/수정 요청):\n' + instruction;
+    + (codes.join('\n\n') || '(코드 노드 없음)') + emailNote + '\n\n사용자 보고(에러/수정 요청):\n' + instruction;
 
   const out = await llm.complete(FIX_SYSTEM, userMsg, 60000);
   if (!out.ok) return { ok: false, error: 'llm_fix_failed: ' + out.error };
@@ -237,7 +256,7 @@ async function modify(cfg, workflowId, instruction) {
     .filter((s) => s && typeof s.code === 'string' && s.code.trim()).slice(0, 4);
   if (!steps.length) return { ok: false, error: 'llm_unparseable_fix' };
 
-  const built = buildFromSteps(wf.name, steps); // 이름 유지(제자리)
+  const built = buildFromSteps(wf.name, steps, { appendEmail: hadEmail }); // 이름 유지(제자리), 이메일이면 실발송 노드 재부착
   const payload = { name: wf.name, nodes: built.nodes, connections: built.connections, settings: wf.settings || { executionOrder: 'v1' } };
   if (wf.active) await deactivate(cfg, workflowId); // 활성 워크플로우는 수정 위해 비활성화(재검토 후 재활성)
   const upd = await updateWorkflow(cfg, workflowId, payload);
@@ -269,8 +288,9 @@ function extractJson(text) {
   try { return JSON.parse(t.slice(s, e + 1)); } catch (_) { return null; }
 }
 
-// 스텝(코드) 배열 → manualTrigger + code 체인 n8n 노드/연결
-function buildFromSteps(name, steps) {
+// 스텝(코드) 배열 → manualTrigger + code 체인 n8n 노드/연결. appendEmail=true면 끝에 실제 발송 Email Send 노드 추가.
+function buildFromSteps(name, steps, opts) {
+  opts = opts || {};
   const manual = { parameters: {}, id: uid(), name: 'When clicking Execute',
     type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [240, 300] };
   const nodes = [manual]; const connections = {}; let prev = manual; let x = 480;
@@ -283,19 +303,36 @@ function buildFromSteps(name, steps) {
     connections[prev.name] = { main: [[{ node: node.name, type: 'main', index: 0 }]] };
     prev = node; x += 240;
   });
+  if (opts.appendEmail) { // 마지막 Code는 {to,subject,body} 반환 → 실제 SMTP 발송
+    const en = emailSendNode([x, 300]);
+    nodes.push(en);
+    connections[prev.name] = { main: [[{ node: en.name, type: 'main', index: 0 }]] };
+  }
   return { name, nodes, connections };
 }
 
+// 이메일 워크플로우 전용 — LLM은 {to,subject,body} 준비 스텝만 생성, AXOS가 실제 Email Send 노드 자동 추가
+const EMAIL_GEN_SYSTEM = [
+  'You design the DATA-PREPARATION steps for an n8n EMAIL workflow (the user wants to send a real email).',
+  'Produce 1-2 Code-node steps; the FINAL step MUST return [{ json: { to, subject, body } }] with values extracted from the task.',
+  "If no recipient is specified, use to: '" + EMAIL.defaultTo + "'. Make subject/body meaningful for the task (Korean ok).",
+  'Do NOT send the email yourself, do NOT use process.env / SMTP / SendGrid / fetch. AXOS appends a REAL Email Send node',
+  '(registered Gmail SMTP) right after your last step, which sends using { to, subject, body }.',
+  N8N_CODE_RULES,
+  'Output ONLY minified JSON: {"name":"<name>","steps":[{"name":"<step, NO #>","code":"<javascript>"}]}. JSON only.',
+].join('\n');
+
 // 자연어 → 실제 워크플로우(LLM). 실패 시 null(상위에서 템플릿 폴백).
 async function aiGenerate(instruction) {
-  const out = await llm.complete(GEN_SYSTEM, '작업 지시: ' + instruction, 60000);
+  const emailMode = isEmailIntent(instruction);
+  const out = await llm.complete(emailMode ? EMAIL_GEN_SYSTEM : GEN_SYSTEM, '작업 지시: ' + instruction, 60000);
   if (!out.ok) return { ok: false, error: out.error };
   const spec = extractJson(out.text);
   if (!spec || !Array.isArray(spec.steps) || !spec.steps.length) return { ok: false, error: 'llm_unparseable' };
   const steps = spec.steps.filter((s) => s && typeof s.code === 'string' && s.code.trim()).slice(0, 4);
   if (!steps.length) return { ok: false, error: 'no_valid_steps' };
-  const built = buildFromSteps(spec.name || instruction.slice(0, 40), steps);
-  return { ok: true, payload: { name: built.name, nodes: built.nodes, connections: built.connections, settings: { executionOrder: 'v1' } },
+  const built = buildFromSteps(spec.name || instruction.slice(0, 40), steps, { appendEmail: emailMode });
+  return { ok: true, email: emailMode, payload: { name: built.name, nodes: built.nodes, connections: built.connections, settings: { executionOrder: 'v1' } },
     engine: 'llm:' + (out.provider || '') + (out.fallback_from ? '(fallback from ' + out.fallback_from + ')' : ''), model: out.model };
 }
 
@@ -305,19 +342,26 @@ async function runWorkflow(cfg, workflowId) {
   const wf = await fetchWorkflow(cfg, workflowId);
   if (!wf) return { ok: false, error: 'not_found' };
   if (!String(wf.name || '').startsWith('[AI]')) return { ok: false, error: 'protected (AI 워크플로우만 실행)' };
-  const codeNodes = (wf.nodes || []).filter((n) => String(n.type).endsWith('.code'));
-  if (!codeNodes.length) return { ok: false, error: 'no_code_nodes' };
+  // 트리거를 제외한 모든 노드를 그대로 실행(emailSend 등 자격증명 보존) → webhook으로 트리거 치환, 끝에 respond
+  const isTrigger = (n) => /(manualTrigger|^.*\.webhook$|executeWorkflowTrigger|scheduleTrigger|\.cron)/i.test(String(n.type)) || /trigger$/i.test(String(n.type));
+  const trigger = (wf.nodes || []).find(isTrigger);
+  const others = (wf.nodes || []).filter((n) => !isTrigger(n)).map((n) => JSON.parse(JSON.stringify(n)));
+  if (!others.length) return { ok: false, error: 'no_runnable_nodes' };
   const path = 'run-' + uid().slice(0, 8);
-  const codes = codeNodes.map((n, i) => ({ parameters: { jsCode: (n.parameters || {}).jsCode || 'return $input.all();' },
-    id: uid(), name: 'C' + (i + 1), type: 'n8n-nodes-base.code', typeVersion: 2, position: [460 + i * 200, 300] }));
   const webhook = { parameters: { httpMethod: 'POST', path, responseMode: 'responseNode', options: {} },
-    id: uid(), name: 'WH', type: 'n8n-nodes-base.webhook', typeVersion: 2.1, position: [240, 300], webhookId: path };
-  const respond = { parameters: { respondWith: 'json', responseBody: '={{ $json }}' },
-    id: uid(), name: 'RP', type: 'n8n-nodes-base.respondToWebhook', typeVersion: 1.5, position: [460 + codes.length * 200, 300] };
-  const chain = [webhook, ...codes, respond];
+    id: uid(), name: 'WH(run)', type: 'n8n-nodes-base.webhook', typeVersion: 2.1, position: [120, 300], webhookId: path };
   const conns = {};
-  for (let i = 0; i < chain.length - 1; i++) conns[chain[i].name] = { main: [[{ node: chain[i + 1].name, type: 'main', index: 0 }]] };
-  const temp = await createWorkflow(cfg, { name: '[AI-RUN-TEMP] ' + path, nodes: chain, connections: conns, settings: { executionOrder: 'v1' } });
+  for (const [from, val] of Object.entries(wf.connections || {})) {
+    if (trigger && from === trigger.name) conns[webhook.name] = val; // 트리거→X 를 webhook→X 로
+    else conns[from] = val;
+  }
+  if (!conns[webhook.name] && others[0]) conns[webhook.name] = { main: [[{ node: others[0].name, type: 'main', index: 0 }]] };
+  const hasOut = new Set(Object.keys(conns));
+  const terminal = others.find((n) => !hasOut.has(n.name)) || others[others.length - 1];
+  const respond = { parameters: { respondWith: 'json', responseBody: '={{ $json }}' },
+    id: uid(), name: 'RP(run)', type: 'n8n-nodes-base.respondToWebhook', typeVersion: 1.5, position: [1200, 300] };
+  conns[terminal.name] = { main: [[{ node: respond.name, type: 'main', index: 0 }]] };
+  const temp = await createWorkflow(cfg, { name: '[AI-RUN-TEMP] ' + path, nodes: [webhook, ...others, respond], connections: conns, settings: { executionOrder: 'v1' } });
   if (!temp.ok || !temp.id) return { ok: false, error: 'temp_create_failed: ' + (temp.error || '') };
   const nkey = { 'X-N8N-API-KEY': cfg.n8nApiKey };
   await httpJson('POST', cfg.n8nBase + '/api/v1/workflows/' + temp.id + '/activate', nkey);
