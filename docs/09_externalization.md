@@ -40,6 +40,10 @@ curl -H "ngrok-skip-browser-warning:true" $DOM/bridge/health    # 브리지 → 
 ```
 Base44 화면 새로고침 → 콘솔에 `localhost:4100 ERR_CONNECTION_REFUSED` 사라지면 성공.
 
+## n8n 에디터 push (WebSocket) — 필수
+- n8n push 백엔드 = **WebSocket**(`/rest/push`). 리버스 프록시(`mock/reverse_proxy.cjs`)는 `server.on('upgrade')`로 WebSocket을 n8n으로 raw 터널링한다. 미처리 시 에디터에서 워크플로우 실행 시 **"Lost connection to the server"** 발생. (검증: proxy/ngrok 모두 `/rest/push` 업그레이드 → 101)
+- AI 어시스트 생성 워크플로우는 **자기완결형**(Webhook→Code→Respond, 외부 httpRequest 제거, responseMode=responseNode) → 에디터에서 바로 실행 가능.
+
 ## Base44 URL 규칙 (필수)
 - Base44(클라우드)는 **절대 localhost를 호출하면 안 됨**. 앱 상수만 사용:
   - `BRIDGE_URL` = `https://hardware-finalize-faceted.ngrok-free.dev/bridge` (브리지 API)
