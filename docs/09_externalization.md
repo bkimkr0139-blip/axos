@@ -42,7 +42,8 @@ Base44 화면 새로고침 → 콘솔에 `localhost:4100 ERR_CONNECTION_REFUSED`
 
 ## n8n 에디터 push (WebSocket) — 필수
 - n8n push 백엔드 = **WebSocket**(`/rest/push`). 리버스 프록시(`mock/reverse_proxy.cjs`)는 `server.on('upgrade')`로 WebSocket을 n8n으로 raw 터널링한다. 미처리 시 에디터에서 워크플로우 실행 시 **"Lost connection to the server"** 발생. (검증: proxy/ngrok 모두 `/rest/push` 업그레이드 → 101)
-- AI 어시스트 생성 워크플로우는 **Manual Trigger → Code** 구조 → 에디터 "Execute Workflow" 클릭 시 즉시 실행(Webhook 트리거는 'Listening for test event' 무한 대기라 클릭 실행 불가하므로 수동 트리거 사용). code 노드는 템플릿 복제로 typeVersion 호환 보장. (수정본 복제는 원본 구조 유지)
+- AI 어시스트 생성 워크플로우는 **LLM(실제 로직) 기반**: `mock/llm.cjs`가 작업을 1~4개 Code 노드(실행 JS)로 분해 생성, Manual Trigger로 체이닝 → 에디터 "Execute Workflow" 클릭 시 즉시 실행. (Webhook 트리거는 'Listening' 무한 대기라 수동 트리거 사용)
+- LLM: provider/키는 `C:\Users\User\works\aep-dt\.env`(ANTHROPIC_API_KEY/OPENAI_API_KEY/LLM_PROVIDER/LLM_MODEL_DEFAULT)에서 런타임 로드. 기본 Anthropic(Claude), **잔액부족/오류 시 OpenAI(gpt-4o)로 자동 폴백**, 그래도 실패 시 템플릿. 키는 코드에 미하드코딩.
 
 ## Base44 URL 규칙 (필수)
 - Base44(클라우드)는 **절대 localhost를 호출하면 안 됨**. 앱 상수만 사용:
