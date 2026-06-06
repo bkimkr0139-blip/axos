@@ -11,6 +11,7 @@
 'use strict';
 const http = require('http');
 const crypto = require('crypto');
+const llm = require('./llm.cjs');
 const uid = () => crypto.randomUUID();
 const slug = (s) => (s || 'ai').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'ai';
 
@@ -128,37 +129,65 @@ async function createWorkflow(cfg, payload) {
   return { ok: true, id: r.body && r.body.id, name: r.body && r.body.name };
 }
 
+// 반환용 노드 요약 (코드 노드는 첫 의미 라인)
+function nodeBrief(n) {
+  const type = String(n.type || '').replace('n8n-nodes-base.', '');
+  let detail;
+  if (type === 'code') {
+    const l = String((n.parameters || {}).jsCode || '').split('\n').find((x) => x.trim() && !x.trim().startsWith('//'));
+    detail = (l || 'code').trim().slice(0, 90);
+  }
+  return { name: n.name, type, detail };
+}
+function aiAName(name, instruction) {
+  const base = name || (instruction || 'workflow').slice(0, 40);
+  return String(base).trim().startsWith('[AI]') ? base : '[AI] ' + base;
+}
+
 // ── 공개 API ──
 async function preview(cfg, instruction, workflowId) {
-  // 수정 미리보기면 대상 워크플로우, 아니면 인텐트 템플릿
-  let base, intent, label;
-  if (workflowId) {
-    base = await fetchWorkflow(cfg, workflowId);
-    if (!base) return { ok: false, error: 'target_not_found' };
-    intent = 'modify'; label = '수정 대상: ' + base.name;
-  } else {
-    const t = classify(instruction); intent = t.intent; label = t.label;
-    base = await fetchWorkflow(cfg, t.baseId);
-    if (!base) return { ok: false, error: 'template_unavailable (n8n/키 확인)' };
+  // 신규(미수정)면 LLM 생성 우선
+  if (!workflowId) {
+    const gen = await aiGenerate(instruction);
+    if (gen.ok) {
+      return { ok: true, intent: 'llm', engine: gen.engine, model: gen.model,
+        name: aiAName(gen.payload.name, instruction),
+        nodes: gen.payload.nodes.map(nodeBrief), edges: toEdges(gen.payload.connections),
+        meta: { trigger: 'manual', engine: gen.engine } };
+    }
+    // 폴백: 템플릿
+    const t = classify(instruction);
+    const base = await fetchWorkflow(cfg, t.baseId);
+    if (!base) return { ok: false, error: 'llm_failed_and_no_template: ' + gen.error };
+    const draft = buildDraft(base, instruction, t.intent, { selfContained: true });
+    return { ok: true, intent: t.intent, engine: 'template(fallback): ' + gen.error, template: t.label,
+      name: aiAName(draft.payload.name, instruction), nodes: draft.payload.nodes.map(nodeBrief),
+      edges: toEdges(draft.payload.connections), meta: draft.meta };
   }
-  const draft = buildDraft(base, instruction, intent,
-    { name: workflowId ? base.name + ' (AI 수정본)' : undefined, selfContained: !workflowId });
-  return { ok: true, intent, template: label, name: draft.payload.name,
-    nodes: draft.payload.nodes.map((n) => ({ name: n.name, type: String(n.type).replace('n8n-nodes-base.', '') })),
-    edges: toEdges(draft.payload.connections), meta: draft.meta };
+  // 수정 미리보기
+  const base = await fetchWorkflow(cfg, workflowId);
+  if (!base) return { ok: false, error: 'target_not_found' };
+  const draft = buildDraft(base, instruction, 'modify', { name: base.name + ' (AI 수정본)' });
+  return { ok: true, intent: 'modify', template: '수정 대상: ' + base.name, name: draft.payload.name,
+    nodes: draft.payload.nodes.map(nodeBrief), edges: toEdges(draft.payload.connections), meta: draft.meta };
 }
 
 async function create(cfg, instruction) {
-  const t = classify(instruction);
-  const base = await fetchWorkflow(cfg, t.baseId);
-  if (!base) return { ok: false, error: 'template_unavailable' };
-  const draft = buildDraft(base, instruction, t.intent, { selfContained: true });
-  const res = await createWorkflow(cfg, draft.payload);
+  let payload, engine = 'template', model;
+  const gen = await aiGenerate(instruction);
+  if (gen.ok) { payload = gen.payload; engine = gen.engine; model = gen.model; }
+  else {
+    const t = classify(instruction);
+    const base = await fetchWorkflow(cfg, t.baseId);
+    if (!base) return { ok: false, error: 'llm_failed_and_no_template: ' + gen.error };
+    payload = buildDraft(base, instruction, t.intent, { selfContained: true }).payload;
+    engine = 'template(fallback): ' + gen.error;
+  }
+  payload.name = aiAName(payload.name, instruction);
+  const res = await createWorkflow(cfg, payload);
   if (!res.ok) return { ok: false, error: res.error, status: res.status };
-  return { ok: true, workflow_id: res.id, name: res.name, intent: t.intent,
-    active: false, webhook_path: draft.meta.webhook_path,
-    nodes: draft.payload.nodes.map((n) => ({ name: n.name, type: String(n.type).replace('n8n-nodes-base.', '') })),
-    edges: toEdges(draft.payload.connections) };
+  return { ok: true, workflow_id: res.id, name: res.name, engine, model, active: false,
+    nodes: payload.nodes.map(nodeBrief), edges: toEdges(payload.connections) };
 }
 
 async function modify(cfg, workflowId, instruction) {
@@ -173,6 +202,56 @@ async function modify(cfg, workflowId, instruction) {
     active: false, note: '원본 보존 — 수정본을 새 워크플로우로 생성(검토 후 활성화)',
     nodes: draft.payload.nodes.map((n) => ({ name: n.name, type: String(n.type).replace('n8n-nodes-base.', '') })),
     edges: toEdges(draft.payload.connections) };
+}
+
+// ── LLM 기반 실제 워크플로우 생성 ──
+const GEN_SYSTEM = [
+  'You are an expert n8n workflow engineer. Design a RUNNABLE n8n workflow that starts with a Manual Trigger.',
+  'Decompose the user task into 1 to 4 sequential steps. EACH step is an n8n "Code" node (JavaScript, mode "Run Once for All Items").',
+  'Each Code node MUST end with: return [{ json: {...} }];  (an array of items). It can read previous step output via $input.all() (array of {json}).',
+  'For external HTTP, use: const res = await this.helpers.httpRequest({ method, url, body, json:true }); inside the code.',
+  'Write REAL, working logic that actually performs the task (compute, transform, fetch, format) — do NOT just echo text.',
+  'Output ONLY valid minified JSON, no markdown, with shape:',
+  '{"name":"<short workflow name>","steps":[{"name":"<step name>","code":"<javascript>"}]}',
+  'Keep code self-contained and safe. Korean names allowed. JSON only.',
+].join('\n');
+
+function extractJson(text) {
+  if (!text) return null;
+  let t = String(text).trim();
+  t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');     // 코드펜스 제거
+  const s = t.indexOf('{'); const e = t.lastIndexOf('}');
+  if (s < 0 || e < 0) return null;
+  try { return JSON.parse(t.slice(s, e + 1)); } catch (_) { return null; }
+}
+
+// 스텝(코드) 배열 → manualTrigger + code 체인 n8n 노드/연결
+function buildFromSteps(name, steps) {
+  const manual = { parameters: {}, id: uid(), name: 'When clicking Execute',
+    type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [240, 300] };
+  const nodes = [manual]; const connections = {}; let prev = manual; let x = 480;
+  steps.forEach((st, i) => {
+    const nm = (st.name && String(st.name).slice(0, 40)) || ('Step ' + (i + 1));
+    const node = { parameters: { jsCode: String(st.code || 'return $input.all();') },
+      id: uid(), name: nm + ' #' + (i + 1), type: 'n8n-nodes-base.code', typeVersion: 2, position: [x, 300] };
+    nodes.push(node);
+    connections[prev.name] = { main: [[{ node: node.name, type: 'main', index: 0 }]] };
+    prev = node; x += 240;
+  });
+  return { name, nodes, connections };
+}
+
+// 자연어 → 실제 워크플로우(LLM). 실패 시 null(상위에서 템플릿 폴백).
+async function aiGenerate(instruction) {
+  const out = await llm.complete(GEN_SYSTEM, '작업 지시: ' + instruction, 60000);
+  if (!out.ok) return { ok: false, error: out.error };
+  const spec = extractJson(out.text);
+  if (!spec || !Array.isArray(spec.steps) || !spec.steps.length) return { ok: false, error: 'llm_unparseable' };
+  const steps = spec.steps.filter((s) => s && typeof s.code === 'string' && s.code.trim()).slice(0, 4);
+  if (!steps.length) return { ok: false, error: 'no_valid_steps' };
+  const built = buildFromSteps(spec.name || instruction.slice(0, 40), steps);
+  return { ok: true, payload: { name: built.name, nodes: built.nodes, connections: built.connections, settings: { executionOrder: 'v1' } },
+    engine: 'llm:' + (out.provider || '') + (out.fallback_from ? '(fallback from ' + out.fallback_from + ')' : ''), model: out.model };
 }
 
 // AI 생성 워크플로우 목록 ([AI] 접두만)
