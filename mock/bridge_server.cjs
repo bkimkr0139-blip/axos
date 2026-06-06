@@ -524,6 +524,16 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && u.pathname === '/assist/templates')
       return send(res, 200, { templates: mxflowBuilder.TEMPLATES.map((t) => ({ intent: t.intent, label: t.label })) });
+    // 앱 내 실행(재실행) — 임시 webhook 래핑으로 실제 실행, 결과/실행오류 반환
+    if (req.method === 'POST' && u.pathname === '/assist/run') {
+      const body = await readBody(req);
+      if (!body.workflow_id) return send(res, 400, { ok: false, error: 'workflow_id required' });
+      if (!CFG.n8nApiKey) return send(res, 502, { ok: false, error: 'n8n_api_key_not_set' });
+      const out = await mxflowBuilder.runWorkflow(builderCfg, body.workflow_id);
+      audit({ decision_id: '-', actor: body.actor || 'user', event: out.ok ? 'workflow_run' : 'workflow_run_error',
+        summary: 'AI 워크플로우 실행: ' + body.workflow_id + ' → ' + (out.ok ? 'ok' : (out.execution_error || out.error || '').slice(0, 80)) });
+      return send(res, 200, out); // 실행오류도 200으로 본문에 담아 전달(UI가 표시 후 수정)
+    }
     // AI 생성 워크플로우 목록 ([AI] 접두만)
     if (req.method === 'GET' && u.pathname === '/assist/list') {
       if (!CFG.n8nApiKey) return send(res, 502, { ok: false, error: 'n8n_api_key_not_set' });
@@ -553,7 +563,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { engine: 'databricks:mosaic_ai', ts: now(),
         predictions: engines.predictions({ scm: scmAgent, sales: salesAgent, hr: hrAgent, quality: qualityAgent, finance: financeAgent, procurement: procurementAgent }) });
 
-    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /workflow?id=', 'POST /assist/preview', 'POST /assist/create', 'POST /assist/modify', 'GET /assist/list', 'POST /assist/delete', 'GET /catalog', 'GET /predictions'] });
+    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /workflow?id=', 'POST /assist/preview', 'POST /assist/create', 'POST /assist/modify', 'POST /assist/run', 'GET /assist/list', 'POST /assist/delete', 'GET /catalog', 'GET /predictions'] });
   } catch (e) { send(res, 500, { ok: false, error: e.message }); }
 });
 

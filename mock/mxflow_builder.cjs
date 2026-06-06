@@ -286,6 +286,49 @@ async function aiGenerate(instruction) {
     engine: 'llm:' + (out.provider || '') + (out.fallback_from ? '(fallback from ' + out.fallback_from + ')' : ''), model: out.model };
 }
 
+// 앱 내 실행 — [AI] 워크플로우의 Code 로직을 임시 webhook으로 감싸 실제 실행, 결과/실행오류 반환.
+// (생성물은 Manual Trigger라 API 직접 실행 불가 → 임시 webhook 래퍼로 즉시 실행 후 삭제)
+async function runWorkflow(cfg, workflowId) {
+  const wf = await fetchWorkflow(cfg, workflowId);
+  if (!wf) return { ok: false, error: 'not_found' };
+  if (!String(wf.name || '').startsWith('[AI]')) return { ok: false, error: 'protected (AI 워크플로우만 실행)' };
+  const codeNodes = (wf.nodes || []).filter((n) => String(n.type).endsWith('.code'));
+  if (!codeNodes.length) return { ok: false, error: 'no_code_nodes' };
+  const path = 'run-' + uid().slice(0, 8);
+  const codes = codeNodes.map((n, i) => ({ parameters: { jsCode: (n.parameters || {}).jsCode || 'return $input.all();' },
+    id: uid(), name: 'C' + (i + 1), type: 'n8n-nodes-base.code', typeVersion: 2, position: [460 + i * 200, 300] }));
+  const webhook = { parameters: { httpMethod: 'POST', path, responseMode: 'responseNode', options: {} },
+    id: uid(), name: 'WH', type: 'n8n-nodes-base.webhook', typeVersion: 2.1, position: [240, 300], webhookId: path };
+  const respond = { parameters: { respondWith: 'json', responseBody: '={{ $json }}' },
+    id: uid(), name: 'RP', type: 'n8n-nodes-base.respondToWebhook', typeVersion: 1.5, position: [460 + codes.length * 200, 300] };
+  const chain = [webhook, ...codes, respond];
+  const conns = {};
+  for (let i = 0; i < chain.length - 1; i++) conns[chain[i].name] = { main: [[{ node: chain[i + 1].name, type: 'main', index: 0 }]] };
+  const temp = await createWorkflow(cfg, { name: '[AI-RUN-TEMP] ' + path, nodes: chain, connections: conns, settings: { executionOrder: 'v1' } });
+  if (!temp.ok || !temp.id) return { ok: false, error: 'temp_create_failed: ' + (temp.error || '') };
+  const nkey = { 'X-N8N-API-KEY': cfg.n8nApiKey };
+  await httpJson('POST', cfg.n8nBase + '/api/v1/workflows/' + temp.id + '/activate', nkey);
+  await new Promise((s) => setTimeout(s, 1500)); // webhook 등록 대기
+  const hit = await httpJson('POST', cfg.n8nBase + '/webhook/' + path, {}, { trigger: 'axos-run' });
+  // n8n은 코드 에러 시에도 webhook을 200 빈본문으로 닫음 → 실행 로그에서 에러 판정
+  await new Promise((s) => setTimeout(s, 500));
+  let execErr = null, execStatus = 'unknown';
+  const list = await httpJson('GET', cfg.n8nBase + '/api/v1/executions?workflowId=' + temp.id + '&limit=1', nkey);
+  const exId = list.body && list.body.data && list.body.data[0] && list.body.data[0].id;
+  if (exId) {
+    const ex = await httpJson('GET', cfg.n8nBase + '/api/v1/executions/' + exId + '?includeData=true', nkey);
+    const eb = ex.body || {};
+    execStatus = eb.status || (eb.finished ? 'success' : 'unknown');
+    const rd = eb.data && eb.data.resultData;
+    if (rd && rd.error) execErr = rd.error.message || (rd.error.description) || JSON.stringify(rd.error).slice(0, 400);
+  }
+  await httpJson('DELETE', cfg.n8nBase + '/api/v1/workflows/' + temp.id, nkey); // 임시 정리
+  if (execErr || execStatus === 'error')
+    return { ok: false, execution_error: String(execErr || 'execution failed').slice(0, 600), status: 'error' };
+  const result = (hit.body !== null && hit.body !== undefined && hit.raw !== '') ? hit.body : null;
+  return { ok: true, result, status: execStatus };
+}
+
 // AI 생성 워크플로우 목록 ([AI] 접두만)
 async function listAi(cfg) {
   const r = await httpJson('GET', cfg.n8nBase + '/api/v1/workflows?limit=250', { 'X-N8N-API-KEY': cfg.n8nApiKey });
@@ -311,4 +354,4 @@ async function deleteMany(cfg, ids) {
   return { ok: true, deleted: results.filter((x) => x.deleted).length, total: results.length, results };
 }
 
-module.exports = { classify, preview, create, modify, listAi, deleteMany, TEMPLATES };
+module.exports = { classify, preview, create, modify, runWorkflow, listAi, deleteMany, TEMPLATES };
