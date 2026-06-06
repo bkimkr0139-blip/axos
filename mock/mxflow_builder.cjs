@@ -13,6 +13,18 @@ const http = require('http');
 const crypto = require('crypto');
 const llm = require('./llm.cjs');
 const uid = () => crypto.randomUUID();
+
+// n8n Code 노드 샌드박스 규칙 (생성/수정 공통) — process.env 등 미지원 → 실행 실패 방지
+const N8N_CODE_RULES = [
+  'n8n Code node sandbox — STRICT RULES (violating these makes the workflow fail at runtime):',
+  '- NO process, NO process.env, NO require(), NO import, NO fs, NO __dirname. These are NOT defined in n8n Code nodes.',
+  '- Available: $input.all() (array of {json}), $json, standard JS (Math, Date, JSON, Array, etc.),',
+  '  and await this.helpers.httpRequest({ method, url, headers, body, json:true }) for HTTP.',
+  '- API keys / secrets are NOT in process.env. If a task needs an API key or credential, declare it as a literal placeholder at the top,',
+  "  e.g. const API_KEY = 'REPLACE_WITH_KEY';  then: if (API_KEY === 'REPLACE_WITH_KEY') return [{ json: { simulated: true, note: 'API 키 미설정 — 실제 호출 생략(시뮬레이션)', ...preparedData } }];",
+  '  Only call the external API when the placeholder has been replaced. This way the workflow ALWAYS runs without throwing.',
+  '- Every Code node MUST end with: return [{ json: {...} }];',
+].join('\n');
 const slug = (s) => (s || 'ai').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'ai';
 
 // 인텐트 → 복제 기반 템플릿(n8n 실제 워크플로우 id). engines.WORKFLOWS와 정합.
@@ -200,10 +212,10 @@ async function create(cfg, instruction) {
 const FIX_SYSTEM = [
   'You are fixing/improving an existing n8n workflow. You are given the current Code-node scripts (in order) and the user report,',
   'which may be an n8n ERROR MESSAGE and/or a change request. Diagnose and FIX the issue, and apply requested changes.',
-  'Output ONLY minified JSON: {"name":"<workflow name>","steps":[{"name":"<step>","code":"<javascript>"}]}',
-  'Each Code node is n8n JS (Run Once for All Items), MUST end with: return [{ json: {...} }];  Read prior step output via $input.all().',
-  'For HTTP use: await this.helpers.httpRequest({method,url,body,json:true}). Fix common errors (undefined vars, JSON parse, await, return shape).',
-  'Keep it runnable. Korean names allowed. JSON only, no markdown.',
+  N8N_CODE_RULES,
+  'COMMON FIX: if the error is "process is not defined", the code used process.env — replace it per the placeholder rule above so it runs.',
+  'Output ONLY minified JSON: {"name":"<workflow name>","steps":[{"name":"<step, NO # numbers>","code":"<javascript>"}]}',
+  'Fix common errors (undefined vars, process.env, JSON parse, missing await, wrong return shape). Keep it runnable. Korean names allowed. JSON only, no markdown.',
 ].join('\n');
 
 async function modify(cfg, workflowId, instruction) {
@@ -240,11 +252,11 @@ async function modify(cfg, workflowId, instruction) {
 const GEN_SYSTEM = [
   'You are an expert n8n workflow engineer. Design a RUNNABLE n8n workflow that starts with a Manual Trigger.',
   'Decompose the user task into 1 to 4 sequential steps. EACH step is an n8n "Code" node (JavaScript, mode "Run Once for All Items").',
-  'Each Code node MUST end with: return [{ json: {...} }];  (an array of items). It can read previous step output via $input.all() (array of {json}).',
-  'For external HTTP, use: const res = await this.helpers.httpRequest({ method, url, body, json:true }); inside the code.',
+  'It can read previous step output via $input.all().',
+  N8N_CODE_RULES,
   'Write REAL, working logic that actually performs the task (compute, transform, fetch, format) — do NOT just echo text.',
   'Output ONLY valid minified JSON, no markdown, with shape:',
-  '{"name":"<short workflow name>","steps":[{"name":"<step name>","code":"<javascript>"}]}',
+  '{"name":"<short workflow name>","steps":[{"name":"<step name, NO # numbers>","code":"<javascript>"}]}',
   'Keep code self-contained and safe. Korean names allowed. JSON only.',
 ].join('\n');
 
@@ -263,9 +275,10 @@ function buildFromSteps(name, steps) {
     type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [240, 300] };
   const nodes = [manual]; const connections = {}; let prev = manual; let x = 480;
   steps.forEach((st, i) => {
-    const nm = (st.name && String(st.name).slice(0, 40)) || ('Step ' + (i + 1));
+    // 이름 정리: 누적된 " #N" 접미 제거(수정 반복 시 '#1 #1 #1' 오염 방지)
+    const clean = String(st.name || ('Step ' + (i + 1))).replace(/(\s*#\d+)+\s*$/g, '').trim().slice(0, 40) || ('Step ' + (i + 1));
     const node = { parameters: { jsCode: String(st.code || 'return $input.all();') },
-      id: uid(), name: nm + ' #' + (i + 1), type: 'n8n-nodes-base.code', typeVersion: 2, position: [x, 300] };
+      id: uid(), name: clean + ' #' + (i + 1), type: 'n8n-nodes-base.code', typeVersion: 2, position: [x, 300] };
     nodes.push(node);
     connections[prev.name] = { main: [[{ node: node.name, type: 'main', index: 0 }]] };
     prev = node; x += 240;
