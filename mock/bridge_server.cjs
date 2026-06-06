@@ -524,6 +524,22 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && u.pathname === '/assist/templates')
       return send(res, 200, { templates: mxflowBuilder.TEMPLATES.map((t) => ({ intent: t.intent, label: t.label })) });
+    // AI 생성 워크플로우 목록 ([AI] 접두만)
+    if (req.method === 'GET' && u.pathname === '/assist/list') {
+      if (!CFG.n8nApiKey) return send(res, 502, { ok: false, error: 'n8n_api_key_not_set' });
+      return send(res, 200, await mxflowBuilder.listAi(builderCfg));
+    }
+    // 선택/전체 삭제 — 서버에서 [AI] 가드(운영 워크플로우 보호). n8n에서도 실제 삭제.
+    if (req.method === 'POST' && u.pathname === '/assist/delete') {
+      const body = await readBody(req);
+      const ids = Array.isArray(body.ids) ? body.ids : (body.id ? [body.id] : []);
+      if (!ids.length) return send(res, 400, { ok: false, error: 'ids required' });
+      if (!CFG.n8nApiKey) return send(res, 502, { ok: false, error: 'n8n_api_key_not_set' });
+      const out = await mxflowBuilder.deleteMany(builderCfg, ids);
+      audit({ decision_id: '-', actor: body.actor || 'user', event: 'workflow_deleted',
+        summary: 'AI 워크플로우 삭제: ' + (out.deleted || 0) + '/' + (out.total || 0) });
+      return send(res, out.ok ? 200 : 502, out);
+    }
 
     // Databricks 판단 레이어 노출 — 메달리온 카탈로그 + 계보 + judge 모드
     if (req.method === 'GET' && u.pathname === '/catalog')
@@ -537,7 +553,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { engine: 'databricks:mosaic_ai', ts: now(),
         predictions: engines.predictions({ scm: scmAgent, sales: salesAgent, hr: hrAgent, quality: qualityAgent, finance: financeAgent, procurement: procurementAgent }) });
 
-    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /workflow?id=', 'POST /assist/preview', 'POST /assist/create', 'POST /assist/modify', 'GET /catalog', 'GET /predictions'] });
+    send(res, 404, { error: 'not_found', try: ['GET /health', 'POST /insight', 'POST /approve', 'POST /reject', 'POST /compensate', 'POST /kill', 'POST /unkill', 'GET /pending', 'GET /audit', 'GET /metrics', 'GET /agents', 'GET /memory', 'GET /workflows', 'GET /workflow?id=', 'POST /assist/preview', 'POST /assist/create', 'POST /assist/modify', 'GET /assist/list', 'POST /assist/delete', 'GET /catalog', 'GET /predictions'] });
   } catch (e) { send(res, 500, { ok: false, error: e.message }); }
 });
 

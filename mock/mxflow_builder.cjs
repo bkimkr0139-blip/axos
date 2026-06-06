@@ -175,4 +175,29 @@ async function modify(cfg, workflowId, instruction) {
     edges: toEdges(draft.payload.connections) };
 }
 
-module.exports = { classify, preview, create, modify, TEMPLATES };
+// AI 생성 워크플로우 목록 ([AI] 접두만)
+async function listAi(cfg) {
+  const r = await httpJson('GET', cfg.n8nBase + '/api/v1/workflows?limit=250', { 'X-N8N-API-KEY': cfg.n8nApiKey });
+  if (!r.ok) return { ok: false, error: 'n8n_list_failed', status: r.status };
+  const all = (r.body && (r.body.data || r.body)) || [];
+  const items = all.filter((w) => String(w.name || '').startsWith('[AI]'))
+    .map((w) => ({ id: String(w.id), name: w.name, active: !!w.active, updated_at: w.updatedAt }));
+  return { ok: true, count: items.length, workflows: items };
+}
+
+// 삭제 — 안전 가드: [AI] 접두 워크플로우만 삭제(운영 파이프라인 보호). 무엇을 받아도 서버에서 검증.
+async function deleteMany(cfg, ids) {
+  const listed = await listAi(cfg);
+  if (!listed.ok) return { ok: false, error: listed.error };
+  const aiMap = new Map(listed.workflows.map((w) => [w.id, w.name]));
+  const results = [];
+  for (const id of (ids || [])) {
+    const sid = String(id);
+    if (!aiMap.has(sid)) { results.push({ id: sid, deleted: false, reason: 'protected_or_not_found(비-AI 워크플로우는 삭제 불가)' }); continue; }
+    const r = await httpJson('DELETE', cfg.n8nBase + '/api/v1/workflows/' + sid, { 'X-N8N-API-KEY': cfg.n8nApiKey });
+    results.push({ id: sid, name: aiMap.get(sid), deleted: r.ok, status: r.ok ? undefined : r.status });
+  }
+  return { ok: true, deleted: results.filter((x) => x.deleted).length, total: results.length, results };
+}
+
+module.exports = { classify, preview, create, modify, listAi, deleteMany, TEMPLATES };
