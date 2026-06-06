@@ -122,6 +122,12 @@ function buildDraft(base, instruction, intent, opts) {
   };
 }
 
+async function updateWorkflow(cfg, id, payload) {
+  return httpJson('PUT', cfg.n8nBase + '/api/v1/workflows/' + id, { 'X-N8N-API-KEY': cfg.n8nApiKey }, payload);
+}
+async function deactivate(cfg, id) {
+  return httpJson('POST', cfg.n8nBase + '/api/v1/workflows/' + id + '/deactivate', { 'X-N8N-API-KEY': cfg.n8nApiKey });
+}
 async function createWorkflow(cfg, payload) {
   const r = await httpJson('POST', cfg.n8nBase + '/api/v1/workflows',
     { 'X-N8N-API-KEY': cfg.n8nApiKey }, payload);
@@ -190,18 +196,44 @@ async function create(cfg, instruction) {
     nodes: payload.nodes.map(nodeBrief), edges: toEdges(payload.connections) };
 }
 
+// AI 오류 수정/개선 — 현재 코드 + 에러/지시를 LLM에 주고 수정본으로 제자리 업데이트
+const FIX_SYSTEM = [
+  'You are fixing/improving an existing n8n workflow. You are given the current Code-node scripts (in order) and the user report,',
+  'which may be an n8n ERROR MESSAGE and/or a change request. Diagnose and FIX the issue, and apply requested changes.',
+  'Output ONLY minified JSON: {"name":"<workflow name>","steps":[{"name":"<step>","code":"<javascript>"}]}',
+  'Each Code node is n8n JS (Run Once for All Items), MUST end with: return [{ json: {...} }];  Read prior step output via $input.all().',
+  'For HTTP use: await this.helpers.httpRequest({method,url,body,json:true}). Fix common errors (undefined vars, JSON parse, await, return shape).',
+  'Keep it runnable. Korean names allowed. JSON only, no markdown.',
+].join('\n');
+
 async function modify(cfg, workflowId, instruction) {
-  const base = await fetchWorkflow(cfg, workflowId);
-  if (!base) return { ok: false, error: 'target_not_found' };
-  // 원본 보존 → 수정본 복제 생성(NL 주입). 비파괴.
-  const draft = buildDraft(base, instruction, 'modify',
-    { name: (base.name || '') + ' (AI 수정본)', namePrefix: '[AI]' });
-  const res = await createWorkflow(cfg, draft.payload);
-  if (!res.ok) return { ok: false, error: res.error, status: res.status };
-  return { ok: true, source_workflow_id: workflowId, workflow_id: res.id, name: res.name,
-    active: false, note: '원본 보존 — 수정본을 새 워크플로우로 생성(검토 후 활성화)',
-    nodes: draft.payload.nodes.map((n) => ({ name: n.name, type: String(n.type).replace('n8n-nodes-base.', '') })),
-    edges: toEdges(draft.payload.connections) };
+  const wf = await fetchWorkflow(cfg, workflowId);
+  if (!wf) return { ok: false, error: 'target_not_found' };
+  // 안전 가드: AI 생성 워크플로우만 수정(운영 파이프라인 보호)
+  if (!String(wf.name || '').startsWith('[AI]'))
+    return { ok: false, error: 'protected (AI 생성 워크플로우만 AI 수정 가능)' };
+
+  const codes = (wf.nodes || []).filter((n) => String(n.type).endsWith('.code'))
+    .map((n, i) => '[' + (i + 1) + '] ' + n.name + ':\n' + ((n.parameters || {}).jsCode || ''));
+  const userMsg = '현재 워크플로우 이름: ' + wf.name + '\n\n현재 Code 노드:\n'
+    + (codes.join('\n\n') || '(코드 노드 없음)') + '\n\n사용자 보고(에러/수정 요청):\n' + instruction;
+
+  const out = await llm.complete(FIX_SYSTEM, userMsg, 60000);
+  if (!out.ok) return { ok: false, error: 'llm_fix_failed: ' + out.error };
+  const spec = extractJson(out.text);
+  const steps = (spec && Array.isArray(spec.steps) ? spec.steps : [])
+    .filter((s) => s && typeof s.code === 'string' && s.code.trim()).slice(0, 4);
+  if (!steps.length) return { ok: false, error: 'llm_unparseable_fix' };
+
+  const built = buildFromSteps(wf.name, steps); // 이름 유지(제자리)
+  const payload = { name: wf.name, nodes: built.nodes, connections: built.connections, settings: wf.settings || { executionOrder: 'v1' } };
+  if (wf.active) await deactivate(cfg, workflowId); // 활성 워크플로우는 수정 위해 비활성화(재검토 후 재활성)
+  const upd = await updateWorkflow(cfg, workflowId, payload);
+  if (!upd.ok) return { ok: false, error: upd.raw || upd.error, status: upd.status };
+  return { ok: true, workflow_id: workflowId, name: wf.name, in_place: true, active: false,
+    engine: 'llm:' + (out.provider || '') + (out.fallback_from ? '(fallback from ' + out.fallback_from + ')' : ''), model: out.model,
+    note: '제자리 수정 완료(원본 id 유지). 비활성 상태이니 n8n에서 재실행/검토 후 활성화하세요.',
+    nodes: built.nodes.map(nodeBrief), edges: toEdges(built.connections) };
 }
 
 // ── LLM 기반 실제 워크플로우 생성 ──
