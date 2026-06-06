@@ -68,21 +68,19 @@ function toEdges(connections) {
   return edges;
 }
 
-// 자기완결형 축약: Webhook→Code→Respond 만 남겨 외부 의존(httpRequest 등) 제거 → 에디터에서 바로 실행 가능
+// 실행 가능형: Manual Trigger → Code. 에디터에서 "Execute Workflow" 클릭 시 webhook 대기 없이 즉시 실행.
+// (Webhook 트리거는 테스트 시 'Listening for test event' 무한 대기 → 클릭 실행 불가하므로 수동 트리거 사용)
+// code 노드는 템플릿에서 복제해 typeVersion 호환 보장. webhook/외부 노드는 제거.
 function selfContain(nodes, connections) {
-  const find = (pred) => nodes.find(pred);
-  const wh = find((n) => String(n.type || '').endsWith('webhook'));
-  const code = find((n) => String(n.type || '') === 'n8n-nodes-base.code');
-  const resp = find((n) => String(n.type || '').endsWith('respondToWebhook'));
-  if (!wh || !code || !resp) return { nodes, connections }; // 구조 다르면 원본 유지
-  // 웹훅이 Respond 노드로 응답하도록
-  wh.parameters = wh.parameters || {}; wh.parameters.responseMode = 'responseNode';
-  // 위치 정렬(가독성)
-  wh.position = [240, 300]; code.position = [480, 300]; resp.position = [720, 300];
+  const code = nodes.find((n) => String(n.type || '') === 'n8n-nodes-base.code');
+  if (!code) return { nodes, connections }; // 코드노드 없으면 원본 유지
+  const codeNode = JSON.parse(JSON.stringify(code));
+  codeNode.id = uid(); codeNode.name = 'Code'; codeNode.position = [520, 300];
+  const manual = { parameters: {}, id: uid(), name: 'When clicking Execute',
+    type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [280, 300] };
   const conns = {};
-  conns[wh.name] = { main: [[{ node: code.name, type: 'main', index: 0 }]] };
-  conns[code.name] = { main: [[{ node: resp.name, type: 'main', index: 0 }]] };
-  return { nodes: [wh, code, resp], connections: conns };
+  conns[manual.name] = { main: [[{ node: codeNode.name, type: 'main', index: 0 }]] };
+  return { nodes: [manual, codeNode], connections: conns };
 }
 
 // 복제 기반 드래프트: 검증된 base에서 name/webhook path/code 메시지 주입
@@ -114,9 +112,12 @@ function buildDraft(base, instruction, intent, opts) {
   const prefix = opts.namePrefix || '[AI]';
   const baseName = opts.name || (instruction || 'workflow').slice(0, 40);
   const name = baseName.trim().startsWith(prefix) ? baseName : prefix + ' ' + baseName;
+  const hasWebhook = nodes.some((n) => String(n.type || '').endsWith('webhook'));
   return {
     payload: { name, nodes, connections, settings: base.settings || { executionOrder: 'v1' } },
-    meta: { intent, webhook_path: newPath, injected_code_node: injectedInto, self_contained: !!opts.selfContained },
+    meta: { intent, trigger: hasWebhook ? 'webhook' : 'manual',
+      webhook_path: hasWebhook ? newPath : null, injected_code_node: injectedInto,
+      self_contained: !!opts.selfContained },
   };
 }
 
