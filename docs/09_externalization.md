@@ -44,7 +44,8 @@ Base44 화면 새로고침 → 콘솔에 `localhost:4100 ERR_CONNECTION_REFUSED`
 - n8n push 백엔드 = **WebSocket**(`/rest/push`). 리버스 프록시(`mock/reverse_proxy.cjs`)는 `server.on('upgrade')`로 WebSocket을 n8n으로 raw 터널링한다. 미처리 시 에디터에서 워크플로우 실행 시 **"Lost connection to the server"** 발생. (검증: proxy/ngrok 모두 `/rest/push` 업그레이드 → 101)
 - AI 어시스트 생성 워크플로우는 **LLM(실제 로직) 기반**: `mock/llm.cjs`가 작업을 1~4개 Code 노드(실행 JS)로 분해 생성, Manual Trigger로 체이닝 → 에디터 "Execute Workflow" 클릭 시 즉시 실행. (Webhook 트리거는 'Listening' 무한 대기라 수동 트리거 사용)
 - LLM: provider/키는 `C:\Users\User\works\aep-dt\.env`(ANTHROPIC_API_KEY/OPENAI_API_KEY/LLM_PROVIDER/LLM_MODEL_DEFAULT)에서 런타임 로드. 기본 Anthropic(Claude), **잔액부족/오류 시 OpenAI(gpt-4o)로 자동 폴백**, 그래도 실패 시 템플릿. 키는 코드에 미하드코딩.
-- **AI 오류 수정**(`/assist/modify`): 대상 [AI] 워크플로우의 현재 Code + 사용자 에러메시지/지시를 LLM에 전달 → 수정본으로 **제자리 업데이트(원본 id 유지)**. 활성 시 비활성화 후 수정(재검토 후 재활성). 비-[AI](운영) 워크플로우는 거부. 검증: 버그 주입→에러메시지 수정요청→same-id 수정 확인.
+- **AI 오류 수정**(`/assist/modify`): 대상 [AI] 워크플로우의 현재 Code + 사용자 에러메시지/지시를 LLM에 전달 → 수정본으로 **제자리 업데이트(원본 id 유지)**. 활성 시 비활성화 후 수정(재검토 후 재활성). 비-[AI](운영) 워크플로우는 거부.
+- **앱 내 실행/재실행**(`/assist/run`): [AI] 워크플로우를 임시 webhook(`[AI-RUN-TEMP]`)으로 감싸 실제 실행 후 삭제 → 결과 반환. ⚠️ n8n은 코드 에러 시 webhook을 200 빈본문으로 닫으므로 **executions API(`?includeData`)로 에러 판정** → `execution_error` 반환. → 오류→AI수정→재실행 루프를 Base44 안에서 완결(n8n 에디터 불필요). 검증: 생성→run(5050)→버그주입→run(에러캡처)→modify→재run(5050).
 
 ## Base44 URL 규칙 (필수)
 - Base44(클라우드)는 **절대 localhost를 호출하면 안 됨**. 앱 상수만 사용:
