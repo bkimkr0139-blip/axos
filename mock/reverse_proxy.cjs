@@ -10,6 +10,7 @@
  */
 'use strict';
 const http = require('http');
+const net = require('net');
 
 const CFG = {
   port: parseInt(process.env.PROXY_PORT || '5000', 10),
@@ -39,8 +40,33 @@ const server = http.createServer((cReq, cRes) => {
   cReq.pipe(pReq);
 });
 
+// WebSocket 업그레이드 프록시 — n8n 에디터 push(/rest/push)는 WebSocket.
+// 미처리 시 에디터가 "Lost connection to the server" 오류. /bridge/* 외는 n8n으로 raw 터널.
+server.on('upgrade', (req, clientSocket, head) => {
+  const toBridge = req.url === CFG.prefix || req.url.startsWith(CFG.prefix + '/') || req.url.startsWith(CFG.prefix + '?');
+  const target = toBridge ? CFG.bridge : CFG.n8n;
+  let path = req.url;
+  if (toBridge) { path = req.url.slice(CFG.prefix.length) || '/'; if (path[0] !== '/') path = '/' + path; }
+
+  const upstream = net.connect(target.port, target.host, () => {
+    // 원본 업그레이드 요청 재구성 (Host만 업스트림으로 교체)
+    let lines = req.method + ' ' + path + ' HTTP/1.1\r\n';
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      const k = req.rawHeaders[i]; const v = req.rawHeaders[i + 1];
+      lines += k + ': ' + (k.toLowerCase() === 'host' ? target.host + ':' + target.port : v) + '\r\n';
+    }
+    lines += '\r\n';
+    upstream.write(lines);
+    if (head && head.length) upstream.write(head);
+    upstream.pipe(clientSocket);
+    clientSocket.pipe(upstream);
+  });
+  upstream.on('error', () => clientSocket.destroy());
+  clientSocket.on('error', () => upstream.destroy());
+});
+
 server.listen(CFG.port, () => {
   console.log('[axos-proxy] reverse proxy on http://localhost:' + CFG.port);
   console.log('[axos-proxy]   ' + CFG.prefix + '/*  -> bridge :' + CFG.bridge.port);
-  console.log('[axos-proxy]   /*        -> n8n    :' + CFG.n8n.port);
+  console.log('[axos-proxy]   /*        -> n8n    :' + CFG.n8n.port + '  (+ WebSocket upgrade)');
 });

@@ -68,10 +68,32 @@ function toEdges(connections) {
   return edges;
 }
 
+// 자기완결형 축약: Webhook→Code→Respond 만 남겨 외부 의존(httpRequest 등) 제거 → 에디터에서 바로 실행 가능
+function selfContain(nodes, connections) {
+  const find = (pred) => nodes.find(pred);
+  const wh = find((n) => String(n.type || '').endsWith('webhook'));
+  const code = find((n) => String(n.type || '') === 'n8n-nodes-base.code');
+  const resp = find((n) => String(n.type || '').endsWith('respondToWebhook'));
+  if (!wh || !code || !resp) return { nodes, connections }; // 구조 다르면 원본 유지
+  // 웹훅이 Respond 노드로 응답하도록
+  wh.parameters = wh.parameters || {}; wh.parameters.responseMode = 'responseNode';
+  // 위치 정렬(가독성)
+  wh.position = [240, 300]; code.position = [480, 300]; resp.position = [720, 300];
+  const conns = {};
+  conns[wh.name] = { main: [[{ node: code.name, type: 'main', index: 0 }]] };
+  conns[code.name] = { main: [[{ node: resp.name, type: 'main', index: 0 }]] };
+  return { nodes: [wh, code, resp], connections: conns };
+}
+
 // 복제 기반 드래프트: 검증된 base에서 name/webhook path/code 메시지 주입
 function buildDraft(base, instruction, intent, opts) {
   opts = opts || {};
-  const nodes = JSON.parse(JSON.stringify(base.nodes || []));
+  let nodes = JSON.parse(JSON.stringify(base.nodes || []));
+  let connections = base.connections || {};
+  if (opts.selfContained) {
+    const sc = selfContain(nodes, connections);
+    nodes = sc.nodes; connections = sc.connections;
+  }
   const newPath = (opts.pathPrefix || 'ai') + '-' + slug(instruction) + '-' + uid().slice(0, 6);
   let injectedInto = null;
   for (const n of nodes) {
@@ -93,8 +115,8 @@ function buildDraft(base, instruction, intent, opts) {
   const baseName = opts.name || (instruction || 'workflow').slice(0, 40);
   const name = baseName.trim().startsWith(prefix) ? baseName : prefix + ' ' + baseName;
   return {
-    payload: { name, nodes, connections: base.connections || {}, settings: base.settings || { executionOrder: 'v1' } },
-    meta: { intent, webhook_path: newPath, injected_code_node: injectedInto },
+    payload: { name, nodes, connections, settings: base.settings || { executionOrder: 'v1' } },
+    meta: { intent, webhook_path: newPath, injected_code_node: injectedInto, self_contained: !!opts.selfContained },
   };
 }
 
@@ -118,7 +140,8 @@ async function preview(cfg, instruction, workflowId) {
     base = await fetchWorkflow(cfg, t.baseId);
     if (!base) return { ok: false, error: 'template_unavailable (n8n/키 확인)' };
   }
-  const draft = buildDraft(base, instruction, intent, { name: workflowId ? base.name + ' (AI 수정본)' : undefined });
+  const draft = buildDraft(base, instruction, intent,
+    { name: workflowId ? base.name + ' (AI 수정본)' : undefined, selfContained: !workflowId });
   return { ok: true, intent, template: label, name: draft.payload.name,
     nodes: draft.payload.nodes.map((n) => ({ name: n.name, type: String(n.type).replace('n8n-nodes-base.', '') })),
     edges: toEdges(draft.payload.connections), meta: draft.meta };
@@ -128,7 +151,7 @@ async function create(cfg, instruction) {
   const t = classify(instruction);
   const base = await fetchWorkflow(cfg, t.baseId);
   if (!base) return { ok: false, error: 'template_unavailable' };
-  const draft = buildDraft(base, instruction, t.intent, {});
+  const draft = buildDraft(base, instruction, t.intent, { selfContained: true });
   const res = await createWorkflow(cfg, draft.payload);
   if (!res.ok) return { ok: false, error: res.error, status: res.status };
   return { ok: true, workflow_id: res.id, name: res.name, intent: t.intent,
